@@ -1,0 +1,60 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+notebooks/**/*.ipynb_checkpoints/
+
+# --- Dataset (raw data not committed — see README for download instructions) ---
+data/
+!data/.gitkeep
+
+# --- MLflow ---
+mlruns/
+mlartifacts/
+
+# --- Model artifacts (large binaries — don't commit trained models directly) ---
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.onnx
+models/*
+!models/.gitkeep
+
+# --- Docker ---
+*.log
+
+# --- Monitoring (local Prometheus/Grafana state, if run locally) ---
+prometheus_data/
+grafana_data/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
