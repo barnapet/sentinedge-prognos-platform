@@ -23,9 +23,10 @@ ENV/
 .ipynb_checkpoints/
 notebooks/**/*.ipynb_checkpoints/
 
-# --- Dataset (raw data not committed — see README for download instructions) ---
-data/
+# --- Dataset (raw data not committed — see data/README.md for download instructions) ---
+data/*
 !data/.gitkeep
+!data/README.md
 
 # --- MLflow ---
 mlruns/
