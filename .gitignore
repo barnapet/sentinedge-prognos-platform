@@ -59,3 +59,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# --- Claude Code conversation exports (/export writes YYYY-MM-DD-HHMMSS-<slug>.txt to cwd) ---
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+# --- Claude Code local settings (not shared, machine-specific) ---
+.claude/settings.local.json
