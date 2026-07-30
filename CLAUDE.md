@@ -47,9 +47,11 @@ tests/
 
 ## Current milestone
 
-M1-EDA: dataset acquisition, exploratory analysis, health-state label threshold definition.
-Four Issues track this milestone — work through them in order rather than jumping ahead to
-feature extraction or modeling.
+M1-EDA is complete: dataset acquisition, exploratory analysis, and health-state label
+threshold definition are done (Issues #8, #9, #10, #11 closed; see `docs/eda_findings.md`).
+A short housekeeping stretch followed close-out (CI pipeline, docs sync, dependency
+pinning) — this is tracked informally as "M1.5" in CLAUDE.md/Issues only, not a PRD
+milestone (PRD Section 11 is unchanged). M2 (feature pipeline) is next.
 
 ## When in doubt
 

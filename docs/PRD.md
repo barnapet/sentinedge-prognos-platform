@@ -196,6 +196,10 @@ sentinedge-prognos-platform/
 This is a target, not a constraint set in stone before Milestone 1 — if EDA reveals a better
 shape, update this section and note why.
 
+**Deviation note:** `CONTRIBUTING.md` actually lives at `docs/CONTRIBUTING.md` rather than the
+repo root shown above — grouping it with the other project docs is a common convention and has
+no functional downside (no tooling in this project looks for a root-level `CONTRIBUTING.md`).
+
 ## 11. Milestones
 
 1. **EDA & framing** — explore the dataset, decide classification vs. RUL, define labels.
