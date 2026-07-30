@@ -49,12 +49,19 @@ introducing it — don't add infrastructure the current milestone doesn't need.
 docs/           PRD and other documentation
 data/           gitignored — raw dataset, not committed
 notebooks/      EDA, exploratory work
+src/labeling.py health-state labeling logic — shared across features/training, deliberately
+                top-level rather than nested (see rationale below)
 src/features/   feature extraction pipeline
 src/training/   training scripts, MLflow logging
 src/serving/    FastAPI app, /predict and /metrics
 demo/           simulated live-feed playback script
 tests/
 ```
+
+`src/labeling.py` stays top-level rather than moving under `src/features/`: it produces the
+target variable (labels), not a feature — feature extraction and training both consume it, so
+it doesn't belong to either. Revisit only if a genuine cross-cutting `src/common/` need emerges
+later; don't create that structure speculatively for one file.
 
 ## Current milestone
 
