@@ -55,6 +55,23 @@ chore/gitignore
 This produces a readable history: anyone reviewing the repo can follow *why* each change
 happened, not just *what* changed.
 
+## Notebook Outputs
+
+Committed notebooks (`notebooks/*.ipynb`) **keep their execution outputs** — plots, printed
+tables, and cell results are not stripped before commit. This is a deliberate choice, not an
+oversight: this is a portfolio project, and outputs let anyone browsing the repo on GitHub see
+the actual EDA results (plots, derived thresholds, etc.) without cloning and re-running
+anything. `README.md`'s "Repo structure" section relies on this.
+
+The trade-off: diffs on notebook files include output/execution-count noise alongside real
+code changes, and merge conflicts can occur on output blobs even when the underlying code
+doesn't conflict. This is considered acceptable at the project's current scale (a handful of
+notebooks, solo-maintained) — re-evaluate if M2/M3 add enough notebooks or contributors that
+this becomes painful in practice. If so, `nbstripout` (strips outputs, cleanest diffs, loses
+GitHub-viewable outputs) or `jupytext` (paired `.py`/`.md` representation for clean code diffs,
+keeps outputs in the `.ipynb`) are the two options considered and rejected for now — see
+Issue #28.
+
 ## Milestone Tags
 
 At the end of each milestone (see `docs/PRD.md` Section 11), tag the commit that completes it:
