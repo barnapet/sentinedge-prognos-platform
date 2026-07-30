@@ -220,6 +220,14 @@ no functional downside (no tooling in this project looks for a root-level `CONTR
   to classification in Section 6, before Milestone 1 begins.
 - Keep the "why not Kubernetes / why not Machina yet" reasoning documented, since a reviewer
   familiar with over-engineered portfolio projects will specifically notice restraint.
+- **Data versioning for processed feature caches (future concern, not solved now):** from M2
+  onward, feature-cache files built under `data/processed/` will need versioning /
+  reproducibility guarantees — if the labeling logic, feature-extraction code, or raw dataset
+  changes, a stale cached feature file could silently get reused in modeling without anyone
+  noticing. Rough direction to revisit in M2/M3: hash the generating code + raw data version
+  into the cache filename/directory, or keep a simple manifest recording which commit/config
+  produced each cache. Not blocking M2 start; noted here so it isn't forgotten once caches
+  start accumulating (Issue #24).
 
 ## 13. Out-of-scope, Future Phase Ideas (not commitments)
 
