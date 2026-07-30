@@ -49,6 +49,8 @@ introducing it — don't add infrastructure the current milestone doesn't need.
 docs/           PRD and other documentation
 data/           gitignored — raw dataset, not committed
 notebooks/      EDA, exploratory work
+src/labeling.py health-state labeling logic — shared across features/training, deliberately
+                top-level rather than nested (see rationale below)
 src/features/   feature extraction pipeline
 src/training/   training scripts, MLflow logging
 src/serving/    FastAPI app, /predict and /metrics
@@ -56,13 +58,18 @@ demo/           simulated live-feed playback script
 tests/
 ```
 
+`src/labeling.py` stays top-level rather than moving under `src/features/`: it produces the
+target variable (labels), not a feature — feature extraction and training both consume it, so
+it doesn't belong to either. Revisit only if a genuine cross-cutting `src/common/` need emerges
+later; don't create that structure speculatively for one file.
+
 ## Current milestone
 
 M1-EDA is complete: dataset acquisition, exploratory analysis, and health-state label
 threshold definition are done (Issues #8, #9, #10, #11 closed; see `docs/eda_findings.md`).
 The M1.5-Housekeeping stretch that followed close-out is also complete (CI pipeline, unit
 tests, README, pinned dependencies, notebook-output policy, data-versioning note, and these
-conventions — Issues #18, #19, #24, #26, #27, #28, #29 all closed). This was tracked
+conventions — Issues #18, #19, #24, #25, #26, #27, #28, #29 all closed). This was tracked
 informally as "M1.5" in CLAUDE.md/Issues only, not a PRD milestone (PRD Section 11 notes it
 without renumbering). M2 (feature pipeline) is next.
 
