@@ -127,12 +127,13 @@ list. Full derivation and correlation tables: `03_feature_candidate_screening.ip
 ## 5. Open items carried into M2
 
 - Hysteresis for `1st_test`'s onset-boundary flapping (Section 3) — needs agreement with #9's
-  locked onset constant, not a unilateral change.
+  locked onset constant, not a unilateral change. Tracked as Issue #20.
 - Skewness and crest factor need an explicit feature-importance/redundancy pass once real
-  extraction is built, rather than being included by default.
+  extraction is built, rather than being included by default. Tracked as Issue #23.
 - Frequency-domain features are a real investigation candidate, not yet started.
+  Tracked as Issue #22.
 - Class imbalance (82:1) must be handled explicitly in M3's training approach (class weights or
-  resampling) and evaluation (per-class recall).
+  resampling) and evaluation (per-class recall). Tracked as Issue #21.
 
 ## Validation performed (Issue #11, M1-EDA)
 

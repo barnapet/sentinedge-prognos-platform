@@ -60,9 +60,11 @@ tests/
 
 M1-EDA is complete: dataset acquisition, exploratory analysis, and health-state label
 threshold definition are done (Issues #8, #9, #10, #11 closed; see `docs/eda_findings.md`).
-A short housekeeping stretch followed close-out (CI pipeline, docs sync, dependency
-pinning) — this is tracked informally as "M1.5" in CLAUDE.md/Issues only, not a PRD
-milestone (PRD Section 11 is unchanged). M2 (feature pipeline) is next.
+The M1.5-Housekeeping stretch that followed close-out is also complete (CI pipeline, unit
+tests, README, pinned dependencies, notebook-output policy, data-versioning note, and these
+conventions — Issues #18, #19, #24, #26, #27, #28, #29 all closed). This was tracked
+informally as "M1.5" in CLAUDE.md/Issues only, not a PRD milestone (PRD Section 11 notes it
+without renumbering). M2 (feature pipeline) is next.
 
 ## When in doubt
 
