@@ -1,0 +1,65 @@
+name: Notebook CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  notebook-execution:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache raw dataset
+        id: cache-data
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          # Static key: the dataset source/version doesn't change, so a fixed key is
+          # correct here. Bump the suffix manually if the upstream dataset ever changes.
+          key: nasa-ims-bearings-v1
+
+      - name: Install system deps for archive extraction
+        if: steps.cache-data.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y unrar
+
+      - name: Download and extract dataset
+        if: steps.cache-data.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd data
+          curl -L -o nasa_bearings.zip https://phm-datasets.s3.amazonaws.com/NASA/4.+Bearings.zip
+          unzip nasa_bearings.zip
+          pip install py7zr
+          python -m py7zr x "4. Bearings/IMS.7z" ./IMS_extracted
+          cd IMS_extracted
+          unrar x -y 1st_test.rar
+          unrar x -y 2nd_test.rar
+          unrar x -y 3rd_test.rar
+          cd ../..
+          # Flatten per data/README.md quirks: each rar nests one extra folder, and
+          # 3rd_test's archive internally calls itself "4th_test" with data under txt/.
+          mkdir -p data/raw
+          mv data/IMS_extracted/1st_test/1st_test data/raw/1st_test
+          mv data/IMS_extracted/2nd_test/2nd_test data/raw/2nd_test
+          mv data/IMS_extracted/3rd_test/4th_test/txt data/raw/3rd_test
+          rm -rf data/nasa_bearings.zip "data/4. Bearings" data/IMS_extracted
+
+      - name: Install project dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install nbclient nbconvert ipykernel
+
+      - name: Execute notebooks
+        run: |
+          set -e
+          for nb in notebooks/*.ipynb; do
+            echo "Executing $nb"
+            jupyter nbconvert --to notebook --execute --inplace "$nb"
+          done
