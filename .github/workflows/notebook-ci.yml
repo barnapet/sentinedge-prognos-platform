@@ -57,6 +57,9 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install nbclient nbconvert ipykernel
+          
+      - name: Run unit tests
+        run: pytest tests/ -v
 
       - name: Execute notebooks
         run: |
