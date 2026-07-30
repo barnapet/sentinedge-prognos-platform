@@ -1,11 +1,16 @@
 # SentinEdge Prognos Platform
-Edge-to-cloud predictive maintenance AI platform using industrial sensor data.
+Predictive maintenance AI platform for industrial bearing vibration data — a served,
+monitored ML system, not a notebook demo.
 
 ## Status
 
-This repository is the starting point for a predictive maintenance MVP:
-- 1 model (bearing failure / RUL prediction)
-- basic model serving
-- basic monitoring
+This repository implements a predictive maintenance MVP:
+- Bearing health-state classification (Normal / Degrading / Critical) from vibration signal
+  data — chosen over RUL regression for the MVP; see `docs/PRD.md` Section 6 for the
+  rationale.
+- A served model (FastAPI) with basic monitoring (Prometheus/Grafana), built out milestone
+  by milestone per `docs/PRD.md` Section 11.
 
-Future iterations will add full MLOps pipelines, Kubernetes deployment, and maintenance agents.
+Kubernetes, multi-model serving, and the Machina agent layer are **not** planned for this
+MVP — they are a documented, deliberate Non-Goal (`docs/PRD.md` Section 4), not an omission
+or a future-iteration promise.
