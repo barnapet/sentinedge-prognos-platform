@@ -25,6 +25,17 @@ referencing the Issue (`Closes #N`), merge only when the relevant PRD Acceptance
 **Definition of Done:** check work against `docs/PRD.md` Section 10 before marking anything
 complete — not "it runs locally."
 
+**Merging and history:** never run `gh pr merge` without explicit approval for that specific
+merge — a prior approval for branch deletion or PR opening does not extend to the merge action
+itself. Always request explicit approval before any force-push or history rewrite (rebase,
+cherry-pick that overwrites a remote branch), even when using `--force-with-lease`.
+
+**Verify before proceeding:** in any multi-step git/gh workflow, confirm the actual output of
+each command before moving to the next step, rather than assuming success. Chained shell
+commands can partially fail silently (a missing file breaking a `cp`, then a downstream `git
+commit` succeeding on stale state) — check real output, don't infer it from the absence of an
+error on an unrelated line.
+
 ## Scope discipline
 
 This project deliberately excludes (for MVP, see PRD Section 4): Kubernetes, full CI/CT/CD with
