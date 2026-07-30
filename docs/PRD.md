@@ -211,6 +211,12 @@ no functional downside (no tooling in this project looks for a root-level `CONTR
 7. *(Stretch)* RUL regression variant, or a documented Machina integration as a technician-facing
    Q&A layer on top of the finished platform.
 
+**Note:** an informal "M1.5-Housekeeping" stretch ran between Milestone 1 and Milestone 2
+(CI pipeline, unit tests, dependency pinning, README expansion, notebook-output policy,
+data-versioning note — see the M1.5-Housekeeping milestone in GitHub Issues). It's tracked
+in `CLAUDE.md` and GitHub Issues only; this numbered list is intentionally left unrenumbered,
+since M1.5 was project hygiene rather than a product milestone.
+
 ## 12. Risks / Open Questions
 
 - Dataset only covers **one operating condition** — worth stating explicitly as a limitation
