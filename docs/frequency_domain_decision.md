@@ -92,7 +92,7 @@ Five features per snapshot, on the same tracked-bearing channel the time-domain 
 | `bpfo_amplitude`, `bpfi_amplitude` | Summed amplitude in ±3 Hz bands around the defect frequency and its first 2 harmonics |
 | `bpfo_amplitude_norm`, `bpfi_amplitude_norm` | The same, divided by the spectrum's median (noise floor) |
 | `bpfo_envelope_norm`, `bpfi_envelope_norm` | Noise-floor-normalised band amplitude of the **envelope** spectrum (1 kHz high-pass → Hilbert → FFT) |
-| `spectral_kurtosis` | Max over frequency bins of `E[|X|⁴]/E[|X|²]² − 2` across STFT frames (Antoni's SK indicator) |
+| `spectral_kurtosis` | Max over frequency bins of `E[\|X\|⁴]/E[\|X\|²]² − 2` across STFT frames (Antoni's SK indicator) |
 
 **Choice 1 — a Hann window is applied before the FFT.** Defect frequencies are not bin-centred
 (236.40 Hz on a 0.977 Hz grid), so an unwindowed FFT leaks rectangular-window sidelobes across
