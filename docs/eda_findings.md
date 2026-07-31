@@ -89,16 +89,25 @@ against the data (not assumed) to be needed only for `2nd_test` (files 982-983) 
 already absorbs a 1-2 file collapse); it becomes label-changing at smaller windows, so it stays in
 as a guard.
 
-**Label distribution:**
+**Label distribution** (current, post-#20 hysteresis — see the note below this table):
 
 | Experiment | Normal | Degrading | Critical | Critical lead time |
 |---|---|---|---|---|
-| `1st_test` | 1,979 (91.8%) | 160 (7.4%) | 17 (0.8%) | 9.5h |
-| `2nd_test` | 657 (66.8%) | 304 (30.9%) | 23 (2.3%) | 3.7h |
+| `1st_test` | 1,906 (88.4%) | 233 (10.8%) | 17 (0.8%) | 9.5h |
+| `2nd_test` | 651 (66.2%) | 310 (31.5%) | 23 (2.3%) | 3.7h |
 | `3rd_test` | 6,158 (97.4%) | 99 (1.6%) | 67 (1.1%) | 11.0h |
-| **Pooled** | **8,794 (92.9%)** | **563 (6.0%)** | **107 (1.1%)** | — |
+| **Pooled** | **8,715 (92.1%)** | **642 (6.8%)** | **107 (1.1%)** | — |
 
-**Class imbalance is 82:1 Normal-to-Critical.** M3 needs class weighting or resampling, and should
+> **Updated in Issue #49.** This table originally recorded the pre-#20 counts
+> (`1st_test` 1,979/160/17; `2nd_test` 657/304/23; pooled 8,794/563/107). Issue #20's
+> hysteresis fix reclassified 73 `1st_test` files and 6 `2nd_test` files from `Normal` to
+> `Degrading` — the flapping files described below — which moves those two experiments'
+> Normal/Degrading split. **`3rd_test` is unchanged** (it never flapped), and **`Critical`
+> counts and lead times are unchanged in all three**: hysteresis only affects files that were
+> bouncing back to `Normal` mid-degradation, not the onset or Critical crossing points
+> (`docs/label_hysteresis_decision.md` Section 4).
+
+**Class imbalance is 81:1 Normal-to-Critical.** M3 needs class weighting or resampling, and should
 report per-class recall rather than plain accuracy — the imbalance is inherent to run-to-failure
 data, not a labeling defect, and should not be corrected by moving the threshold.
 
@@ -119,12 +128,23 @@ quantification, and the rejected alternative (N-consecutive-file confirmation): 
 Checked against the cached/computed data rather than assumed from a generic vibration-analysis
 list. Full derivation and correlation tables: `03_feature_candidate_screening.ipynb`.
 
+> **Figures refreshed in Issue #49.** Every correlation and per-label statistic in this section is
+> computed over the Degrading+Critical window, so all of them depend on the labeling rule.
+> `03_feature_candidate_screening.ipynb` produced them *before* Issue #20's hysteresis fix
+> (`n=177/327/166` Degrading+Critical files); the values below are recomputed against the current
+> `src.labeling.assign_labels` (`n=250/333/166`), matching
+> `notebooks/04_feature_pipeline_validation.ipynb` Section 4. Only `1st_test` moves materially —
+> it gained 73 of the 79 reclassified files. Where a figure changed, the original pre-#20 value is
+> given in parentheses so the two documents reconcile. Sources:
+> `docs/label_hysteresis_decision.md` (the fix) and
+> `notebooks/04_feature_pipeline_validation.ipynb` (the recomputation).
+
 | Feature | Status | Evidence |
 |---|---|---|
 | **RMS** | Confirmed useful | Already the basis of the #10 labeling rule; generalizes as a ratio-to-baseline across all three experiments. |
-| **Kurtosis** | Confirmed useful | Decouples from RMS specifically in the impulsive failure (`1st_test`: `corr(rms, kurtosis) = -0.10` within the Degrading+Critical window, vs. `0.63-0.65` for the other two) — catches a failure mode RMS amplitude undersells. Lead/lag vs. RMS onset is failure-mode-dependent: leads by ~17h for `1st_test`, lags by ~24-53h for `2nd_test`/`3rd_test` — not a uniform "early warning" feature. |
-| **Skewness** | Plausible, worth testing | Real, non-redundant trend (`corr` with kurtosis `-0.42` to `-0.74` in the Degrading+Critical window, not collinear): increasingly negative with severity in `2nd_test`/`3rd_test`. Shows pre-onset transient spikes in `1st_test` (5 files, elevated kurtosis too, all within ~60 files of the RMS-based onset). Caveat: baseline `|skewness|` sits near zero (~0.03) in all three experiments, so #9/#10's ratio-to-baseline threshold pattern does not transfer — M2 needs an absolute threshold and likely a smoothed (rolling) version, not raw per-file skewness. |
-| **Crest factor** | Plausible, low priority | Correlates `0.57-0.88` with kurtosis in the Degrading+Critical window across all three experiments — largely redundant where it counts. Non-monotonic with severity in `1st_test` (Normal 5.31 → Degrading 11.77 → Critical 9.67 — it falls back down). Cheap to compute; include in an M2 feature-importance/redundancy check rather than hand-designing a threshold around it. |
+| **Kurtosis** | Confirmed useful | Decouples from RMS specifically in the impulsive failure (`1st_test`: `corr(rms, kurtosis) = -0.02` over `n=250` Degrading+Critical files — was `-0.10` over `n=177` pre-#20 — vs. `0.63-0.65` for the other two, unchanged) — catches a failure mode RMS amplitude undersells. The 73 files #20 reclassified sit right at the onset boundary, so they are near baseline RMS and not yet showing the sharp kurtosis spikes that dominate later; including them pulls the coefficient toward zero from below. Both values say the same thing — decoupled for `1st_test`, correlated for the other two — so the conclusion is unaffected. Lead/lag vs. RMS onset is failure-mode-dependent: leads by ~17h for `1st_test`, lags by ~24-53h for `2nd_test`/`3rd_test` (unchanged by #20 — onset indices did not move) — not a uniform "early warning" feature. |
+| **Skewness** | Confirmed useful (Issue #23) | Real, non-redundant trend (`corr` with kurtosis `-0.43` to `-0.74` in the Degrading+Critical window — `1st_test` was `-0.42` pre-#20; the other two unchanged — not collinear): increasingly negative with severity in `2nd_test`/`3rd_test`. Shows pre-onset transient spikes in `1st_test` (5 files, unchanged by #20 since onset did not move; elevated kurtosis too, all within ~60 files of the RMS-based onset). Caveat: baseline `|skewness|` sits near zero (~0.03) in all three experiments, so #9/#10's ratio-to-baseline threshold pattern does not transfer — M2 needs an absolute threshold and likely a smoothed (rolling) version, not raw per-file skewness. |
+| **Crest factor** | Evaluated and dropped (Issue #23) | Correlates `0.56-0.88` with kurtosis in the Degrading+Critical window across all three experiments (`2nd_test` was `0.57` pre-#20; the other two unchanged) — largely redundant where it counts. Non-monotonic with severity in `1st_test` (Normal 5.17 → Degrading 10.89 → Critical 9.67 — it falls back down; pre-#20: 5.31 → 11.77 → 9.67, same shape). The M2 redundancy check this row asked for was done in Issue #23 and dropped it — see `docs/skewness_crestfactor_decision.md`. |
 | **Peak-to-peak** | Checked, not recommended | Correlates `0.65-0.95` with RMS, whole-life and within Degrading+Critical alike; near-constant multiple of RMS for `2nd_test`/`3rd_test` (coefficient of variation `0.09-0.10`). Adds negligible information beyond RMS. |
 | **Frequency-domain** (spectral kurtosis, BPFI/BPFO-aligned energy, dominant-frequency shift) | **Investigated in Issue #22 — not adopted** | Was: "untested, flagged for M2". Issue #22 computed BPFO (236.40 Hz) / BPFI (296.93 Hz) band amplitudes, envelope-demodulated versions, and spectral kurtosis for all three experiments. The predicted inner-race/outer-race split **was confirmed** — the fault-matched defect frequency responds more strongly in all three experiments — but none of the features beat the retained time-domain set once between-experiment baseline offsets are removed, and the fixed-band formulation proved unstable to its own high-pass constant. Spectral kurtosis showed no separability (pooled F=0.8) and correlates 0.76 with time-domain kurtosis. Full analysis, bearing-geometry sourcing, and follow-up directions: `docs/frequency_domain_decision.md`. |
 
@@ -140,7 +160,7 @@ list. Full derivation and correlation tables: `03_feature_candidate_screening.ip
   documented fault-mode split was confirmed physically, but the features underperform the
   retained time-domain set). See `docs/frequency_domain_decision.md`, which also records the
   three follow-up directions worth trying if frequency-domain work is revisited.
-- Class imbalance (82:1) must be handled explicitly in M3's training approach (class weights or
+- Class imbalance (81:1) must be handled explicitly in M3's training approach (class weights or
   resampling) and evaluation (per-class recall). Tracked as Issue #21.
 
 ## Validation performed (Issue #11, M1-EDA)
