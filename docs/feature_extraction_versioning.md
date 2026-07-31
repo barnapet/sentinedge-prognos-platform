@@ -19,6 +19,15 @@ reverse-engineer these choices from code.
 | `rms` | Raw per-file RMS of the tracked bearing's channel |
 | `rms_ratio` | 10-file rolling mean of `rms`, divided by the first-50-file baseline mean — the same ratio `src.labeling.assign_labels` consumes (`docs/feature_windowing_decision.md`) |
 | `kurtosis` | Raw per-file standard (Pearson) kurtosis, no rolling window |
+| `skewness` | Raw per-file sample skewness (scipy default, `bias=True`) |
+| `skewness_smoothed` | 10-file rolling mean of `skewness`, **not** a ratio-to-baseline (baseline `\|skewness\|` ~ 0.03 in all three experiments — see `docs/feature_windowing_decision.md`) |
+
+**Note (Issue #23):** `skewness`/`skewness_smoothed` were added after evaluating both
+skewness and crest factor for redundancy against RMS/kurtosis
+(`docs/skewness_crestfactor_decision.md`). Skewness was confirmed useful and folded
+into this schema; crest factor was evaluated and found redundant with kurtosis, so it
+was **not** added here — its computation lives in
+`src/features/candidate_features.py`, tested but not part of this pipeline's output.
 
 **Note (Issue #43):** #41 originally shipped this schema without a column identifying
 the test set — only the filename (`<name>_features.parquet`) distinguished the three

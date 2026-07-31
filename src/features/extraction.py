@@ -1,10 +1,10 @@
-"""RMS and kurtosis feature extraction for bearing vibration snapshots.
+"""RMS, kurtosis, and skewness feature extraction for bearing vibration snapshots.
 
 Extracted as an importable module (Issue #41, same pattern as `src/labeling.py` from
 Issue #19) so M3 training can consume it directly rather than re-deriving features
 from a notebook. See `notebooks/01_vibration_signal_evolution.ipynb` for the original
-derivation narrative and `docs/feature_windowing_decision.md` (Issue #40) for why RMS
-and kurtosis are windowed the way they are here:
+derivation narrative and `docs/feature_windowing_decision.md` (Issue #40) for why RMS,
+kurtosis, and skewness are windowed the way they are here:
 
 - RMS: same 10-file rolling mean, `min_periods=1`, ratio to a per-experiment baseline,
   as `src/labeling.py` consumes (`rms_ratio`). Recomputing it identically means the
@@ -13,6 +13,14 @@ and kurtosis are windowed the way they are here:
   smoothing would blunt exactly the sharp per-file spikes that make kurtosis
   informative for `1st_test`'s impulsive inner-race failure (see the windowing
   decision doc, Section 2).
+- Skewness: raw per-file value plus a 10-file rolling mean (`skewness_smoothed`,
+  same window as RMS), absolute value not ratio-to-baseline (baseline |skewness| ~
+  0.03 in all three experiments -- indistinguishable from zero). Confirmed useful in
+  Issue #23 (`docs/skewness_crestfactor_decision.md`): `skewness_smoothed` separates
+  health states at least as strongly as kurtosis in every experiment, without being
+  collinear with it. Crest factor was evaluated alongside it and found redundant with
+  kurtosis -- see `src/features/candidate_features.py`, kept there as
+  evaluated-but-unused rather than folded in here.
 
 Per-experiment tracked-bearing channel selection matches
 `docs/eda_findings.md` Section 1 / `01_vibration_signal_evolution.ipynb`.
@@ -26,13 +34,23 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.stats import kurtosis as _scipy_kurtosis
+from scipy.stats import skew as _scipy_skew
 
 # Carried over from notebooks/01_vibration_signal_evolution.ipynb /
 # 02_health_state_labeling.ipynb -- do not change without re-running that analysis.
 ROLLING_WINDOW = 10
 BASELINE_N_FILES = 50
 
-FEATURE_COLUMNS = ["experiment", "file_index", "timestamp", "rms", "rms_ratio", "kurtosis"]
+FEATURE_COLUMNS = [
+    "experiment",
+    "file_index",
+    "timestamp",
+    "rms",
+    "rms_ratio",
+    "kurtosis",
+    "skewness",
+    "skewness_smoothed",
+]
 
 
 @dataclass(frozen=True)
@@ -86,6 +104,17 @@ def compute_kurtosis(signal: np.ndarray) -> float:
     return float(_scipy_kurtosis(signal, fisher=False))
 
 
+def compute_skewness(signal: np.ndarray) -> float:
+    """Sample skewness (scipy default, `bias=True`).
+
+    Matches `skew(sig)` in `03_feature_candidate_screening.ipynb` and
+    `notebooks/01_vibration_signal_evolution.ipynb`. Confirmed useful in Issue #23
+    (`docs/skewness_crestfactor_decision.md`) -- see `add_rolling_skewness` for the
+    smoothed series that's actually separable across health states.
+    """
+    return float(_scipy_skew(signal))
+
+
 def add_rolling_rms_ratio(
     df: pd.DataFrame,
     rolling_window: int = ROLLING_WINDOW,
@@ -106,6 +135,23 @@ def add_rolling_rms_ratio(
     return out
 
 
+def add_rolling_skewness(df: pd.DataFrame, rolling_window: int = ROLLING_WINDOW) -> pd.DataFrame:
+    """Add `skewness_smoothed`: a `rolling_window`-file rolling mean of `skewness`,
+    `min_periods=1` (no NaNs, same convention as `add_rolling_rms_ratio` -- see
+    `docs/feature_windowing_decision.md` Section 3).
+
+    Unlike `rms_ratio`, this is **not** a ratio-to-baseline -- `docs/eda_findings.md`
+    /`docs/feature_windowing_decision.md` found baseline `|skewness|` ~ 0 in all three
+    experiments, so a baseline-relative ratio would be meaningless (a near-zero
+    denominator). Confirmed in Issue #23 (`docs/skewness_crestfactor_decision.md`) that
+    smoothing materially improves skewness's separability across health states,
+    validating this window empirically rather than by analogy alone.
+    """
+    out = df.copy()
+    out["skewness_smoothed"] = out["skewness"].rolling(rolling_window, min_periods=1).mean()
+    return out
+
+
 def extract_experiment_features(
     raw_dir: Path,
     experiment: str,
@@ -113,14 +159,14 @@ def extract_experiment_features(
     rolling_window: int = ROLLING_WINDOW,
     baseline_n_files: int = BASELINE_N_FILES,
 ) -> pd.DataFrame:
-    """Compute per-file RMS/kurtosis and the rolling RMS ratio for one experiment.
+    """Compute per-file RMS/kurtosis/skewness and their rolling series for one experiment.
 
     Returns one row per snapshot file, in chronological order, with columns
     `FEATURE_COLUMNS` (`experiment`, `file_index`, `timestamp`, `rms`, `rms_ratio`,
-    `kurtosis`). `experiment` is a constant tag (e.g. `"1st_test"`), not derived from
-    any per-file computation -- it lets the three experiments' parquet outputs be
-    concatenated and grouped/filtered by test set without relying on filenames
-    (Issue #43).
+    `kurtosis`, `skewness`, `skewness_smoothed`). `experiment` is a constant tag
+    (e.g. `"1st_test"`), not derived from any per-file computation -- it lets the
+    three experiments' parquet outputs be concatenated and grouped/filtered by test
+    set without relying on filenames (Issue #43).
 
     Args:
         raw_dir: Directory containing one file per snapshot, named
@@ -143,6 +189,7 @@ def extract_experiment_features(
                 "timestamp": parse_timestamp(f),
                 "rms": compute_rms(sig),
                 "kurtosis": compute_kurtosis(sig),
+                "skewness": compute_skewness(sig),
             }
         )
 
@@ -150,5 +197,6 @@ def extract_experiment_features(
     df = add_rolling_rms_ratio(
         df, rolling_window=rolling_window, baseline_n_files=baseline_n_files
     )
+    df = add_rolling_skewness(df, rolling_window=rolling_window)
     df["experiment"] = experiment
     return df[FEATURE_COLUMNS]
