@@ -102,13 +102,17 @@ as a guard.
 report per-class recall rather than plain accuracy — the imbalance is inherent to run-to-failure
 data, not a labeling defect, and should not be corrected by moving the threshold.
 
-**Known open issue, deferred to M2, not fixed in #10:** 73 files (3.4%) of `1st_test` revert to
-`Normal` after degradation has already begun, flapping across the 1.3x onset line over files
-1906-1999 — its RMS rises so gently the rolling mean straddles the boundary for a while. Every one
-of those files genuinely sits within a few percent of the boundary (ambiguous in the signal, not
-miscomputed by the rule). Fixing it means adding hysteresis to the onset definition, which is a
-change to #9's locked constant — left as a quantified, flagged wrinkle rather than changed
-silently here.
+**Resolved in Issue #20** (was: known open issue deferred to M2): 73 files (3.4%) of `1st_test`
+were reverting to `Normal` after degradation had already begun, flapping across the 1.3x onset
+line over files 1906-1999 — its RMS rises so gently the rolling mean straddled the boundary for a
+while. Every one of those files genuinely sits within a few percent of the boundary (ambiguous in
+the signal, not miscomputed by the rule). `2nd_test` turned out to have a smaller, previously
+unflagged version of the same thing (6 files, 788-793). Fixed with hysteresis on downward label
+transitions only — contrary to what this section originally assumed, this did **not** require
+changing #9's locked `ONSET_MULTIPLE` constant: the upward (onset-entering) comparison against
+1.3 is unchanged, and only a new exit-side margin was added for reverting. Full investigation,
+quantification, and the rejected alternative (N-consecutive-file confirmation): see
+`docs/label_hysteresis_decision.md`.
 
 ## 4. Feature-extraction candidates for M2 (#11)
 
@@ -126,8 +130,8 @@ list. Full derivation and correlation tables: `03_feature_candidate_screening.ip
 
 ## 5. Open items carried into M2
 
-- Hysteresis for `1st_test`'s onset-boundary flapping (Section 3) — needs agreement with #9's
-  locked onset constant, not a unilateral change. Tracked as Issue #20.
+- ~~Hysteresis for `1st_test`'s onset-boundary flapping~~ (Section 3) — **resolved**, Issue #20:
+  see `docs/label_hysteresis_decision.md`.
 - Skewness and crest factor need an explicit feature-importance/redundancy pass once real
   extraction is built, rather than being included by default. Tracked as Issue #23.
 - Frequency-domain features are a real investigation candidate, not yet started.
