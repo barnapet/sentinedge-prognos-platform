@@ -32,7 +32,7 @@ from scipy.stats import kurtosis as _scipy_kurtosis
 ROLLING_WINDOW = 10
 BASELINE_N_FILES = 50
 
-FEATURE_COLUMNS = ["file_index", "timestamp", "rms", "rms_ratio", "kurtosis"]
+FEATURE_COLUMNS = ["experiment", "file_index", "timestamp", "rms", "rms_ratio", "kurtosis"]
 
 
 @dataclass(frozen=True)
@@ -108,6 +108,7 @@ def add_rolling_rms_ratio(
 
 def extract_experiment_features(
     raw_dir: Path,
+    experiment: str,
     channel_idx: int,
     rolling_window: int = ROLLING_WINDOW,
     baseline_n_files: int = BASELINE_N_FILES,
@@ -115,11 +116,17 @@ def extract_experiment_features(
     """Compute per-file RMS/kurtosis and the rolling RMS ratio for one experiment.
 
     Returns one row per snapshot file, in chronological order, with columns
-    `FEATURE_COLUMNS` (`file_index`, `timestamp`, `rms`, `rms_ratio`, `kurtosis`).
+    `FEATURE_COLUMNS` (`experiment`, `file_index`, `timestamp`, `rms`, `rms_ratio`,
+    `kurtosis`). `experiment` is a constant tag (e.g. `"1st_test"`), not derived from
+    any per-file computation -- it lets the three experiments' parquet outputs be
+    concatenated and grouped/filtered by test set without relying on filenames
+    (Issue #43).
 
     Args:
         raw_dir: Directory containing one file per snapshot, named
             `YYYY.MM.DD.HH.MM.SS` (see `data/README.md`).
+        experiment: Name of the experiment this `raw_dir` belongs to (e.g. one of
+            the keys of `EXPERIMENTS`), stamped onto every output row.
         channel_idx: 0-based column index of the tracked bearing's channel within
             each snapshot file (see `EXPERIMENTS`).
     """
@@ -143,4 +150,5 @@ def extract_experiment_features(
     df = add_rolling_rms_ratio(
         df, rolling_window=rolling_window, baseline_n_files=baseline_n_files
     )
+    df["experiment"] = experiment
     return df[FEATURE_COLUMNS]
