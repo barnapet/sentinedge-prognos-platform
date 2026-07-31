@@ -126,16 +126,20 @@ list. Full derivation and correlation tables: `03_feature_candidate_screening.ip
 | **Skewness** | Plausible, worth testing | Real, non-redundant trend (`corr` with kurtosis `-0.42` to `-0.74` in the Degrading+Critical window, not collinear): increasingly negative with severity in `2nd_test`/`3rd_test`. Shows pre-onset transient spikes in `1st_test` (5 files, elevated kurtosis too, all within ~60 files of the RMS-based onset). Caveat: baseline `|skewness|` sits near zero (~0.03) in all three experiments, so #9/#10's ratio-to-baseline threshold pattern does not transfer — M2 needs an absolute threshold and likely a smoothed (rolling) version, not raw per-file skewness. |
 | **Crest factor** | Plausible, low priority | Correlates `0.57-0.88` with kurtosis in the Degrading+Critical window across all three experiments — largely redundant where it counts. Non-monotonic with severity in `1st_test` (Normal 5.31 → Degrading 11.77 → Critical 9.67 — it falls back down). Cheap to compute; include in an M2 feature-importance/redundancy check rather than hand-designing a threshold around it. |
 | **Peak-to-peak** | Checked, not recommended | Correlates `0.65-0.95` with RMS, whole-life and within Degrading+Critical alike; near-constant multiple of RMS for `2nd_test`/`3rd_test` (coefficient of variation `0.09-0.10`). Adds negligible information beyond RMS. |
-| **Frequency-domain** (spectral kurtosis, BPFI/BPFO-aligned energy, dominant-frequency shift) | Untested, flagged for M2 | No FFT/spectral analysis has been performed on this dataset. Plausible given the documented inner-race (`1st_test`) vs. outer-race (`2nd_test`/`3rd_test`) split — classical bearing-fault theory predicts different characteristic defect frequencies for the two — but nothing here confirms a specific feature works. M2 should investigate, grounded in the documented fault type, rather than assume a generic FFT-peak-energy feature is sufficient. |
+| **Frequency-domain** (spectral kurtosis, BPFI/BPFO-aligned energy, dominant-frequency shift) | **Investigated in Issue #22 — not adopted** | Was: "untested, flagged for M2". Issue #22 computed BPFO (236.40 Hz) / BPFI (296.93 Hz) band amplitudes, envelope-demodulated versions, and spectral kurtosis for all three experiments. The predicted inner-race/outer-race split **was confirmed** — the fault-matched defect frequency responds more strongly in all three experiments — but none of the features beat the retained time-domain set once between-experiment baseline offsets are removed, and the fixed-band formulation proved unstable to its own high-pass constant. Spectral kurtosis showed no separability (pooled F=0.8) and correlates 0.76 with time-domain kurtosis. Full analysis, bearing-geometry sourcing, and follow-up directions: `docs/frequency_domain_decision.md`. |
 
 ## 5. Open items carried into M2
 
 - ~~Hysteresis for `1st_test`'s onset-boundary flapping~~ (Section 3) — **resolved**, Issue #20:
   see `docs/label_hysteresis_decision.md`.
-- Skewness and crest factor need an explicit feature-importance/redundancy pass once real
-  extraction is built, rather than being included by default. Tracked as Issue #23.
-- Frequency-domain features are a real investigation candidate, not yet started.
-  Tracked as Issue #22.
+- ~~Skewness and crest factor need an explicit feature-importance/redundancy pass~~ —
+  **resolved**, Issue #23: skewness kept (added to the feature pipeline), crest factor evaluated
+  and dropped. See `docs/skewness_crestfactor_decision.md`.
+- ~~Frequency-domain features are a real investigation candidate, not yet started~~ —
+  **resolved**, Issue #22: BPFI/BPFO and spectral kurtosis investigated and not adopted (the
+  documented fault-mode split was confirmed physically, but the features underperform the
+  retained time-domain set). See `docs/frequency_domain_decision.md`, which also records the
+  three follow-up directions worth trying if frequency-domain work is revisited.
 - Class imbalance (82:1) must be handled explicitly in M3's training approach (class weights or
   resampling) and evaluation (per-class recall). Tracked as Issue #21.
 

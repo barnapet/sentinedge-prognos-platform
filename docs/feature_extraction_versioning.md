@@ -29,6 +29,13 @@ into this schema; crest factor was evaluated and found redundant with kurtosis, 
 was **not** added here — its computation lives in
 `src/features/candidate_features.py`, tested but not part of this pipeline's output.
 
+**Note (Issue #22):** this schema is deliberately time-domain only. BPFO/BPFI
+defect-band amplitudes (plain and envelope-demodulated) and spectral kurtosis were
+computed and evaluated against it, and **none were adopted** — see
+`docs/frequency_domain_decision.md`. Like crest factor, they live in
+`src/features/candidate_features.py` as evaluated-but-unused, so this schema and the
+`combined_hash` of existing parquet outputs are unaffected by that issue.
+
 **Note (Issue #43):** #41 originally shipped this schema without a column identifying
 the test set — only the filename (`<name>_features.parquet`) distinguished the three
 outputs. Issue #43's AC 2 required grouping/filtering by test set without relying on
