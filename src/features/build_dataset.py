@@ -38,7 +38,7 @@ def build_experiment(name: str, raw_dir: Path = RAW_DIR, processed_dir: Path = P
     cfg = EXPERIMENTS[name]
     experiment_raw_dir = raw_dir / name
 
-    df = extract_experiment_features(experiment_raw_dir, cfg.channel_idx)
+    df = extract_experiment_features(experiment_raw_dir, name, cfg.channel_idx)
 
     parquet_path = processed_dir / f"{name}_features.parquet"
     processed_dir.mkdir(parents=True, exist_ok=True)

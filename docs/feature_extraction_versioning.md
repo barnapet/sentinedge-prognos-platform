@@ -13,11 +13,19 @@ reverse-engineer these choices from code.
 
 | Column | Meaning |
 |---|---|
+| `experiment` | Which test set the row belongs to (`1st_test`/`2nd_test`/`3rd_test`) — added in Issue #43 so the three parquet files can be `pd.concat`-ed and filtered/grouped by test set without relying on filename |
 | `file_index` | 0-based chronological snapshot index within the experiment |
 | `timestamp` | Parsed from the snapshot filename |
 | `rms` | Raw per-file RMS of the tracked bearing's channel |
 | `rms_ratio` | 10-file rolling mean of `rms`, divided by the first-50-file baseline mean — the same ratio `src.labeling.assign_labels` consumes (`docs/feature_windowing_decision.md`) |
 | `kurtosis` | Raw per-file standard (Pearson) kurtosis, no rolling window |
+
+**Note (Issue #43):** #41 originally shipped this schema without a column identifying
+the test set — only the filename (`<name>_features.parquet`) distinguished the three
+outputs. Issue #43's AC 2 required grouping/filtering by test set without relying on
+filename, so `experiment` was added as a constant per-row tag, stamped on by
+`extract_experiment_features`/`build_experiment` rather than derived by any
+test-set-specific branching inside the extraction functions themselves (per #43 AC 3).
 
 **Decision: no `label`/`label_pre_override`/`override_applied` columns here.** Issue #41
 is scoped to RMS/kurtosis feature extraction; producing a label requires

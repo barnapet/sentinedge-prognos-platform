@@ -76,9 +76,12 @@ def test_extract_experiment_features_end_to_end(tmp_path):
     for name, sig in zip(filenames, signals):
         write_snapshot(raw_dir / name, [sig])
 
-    df = extract_experiment_features(raw_dir, channel_idx=0, rolling_window=2, baseline_n_files=1)
+    df = extract_experiment_features(
+        raw_dir, experiment="synthetic_test", channel_idx=0, rolling_window=2, baseline_n_files=1
+    )
 
     assert list(df.columns) == FEATURE_COLUMNS
+    assert df["experiment"].tolist() == ["synthetic_test"] * 3
     assert df["file_index"].tolist() == [0, 1, 2]
     # Filenames sort chronologically, so row order must match the listed order above.
     assert df["rms"].tolist() == pytest.approx(
@@ -106,11 +109,34 @@ def test_extract_experiment_features_reads_documented_tracked_channel(tmp_path, 
     columns = [[j, -j, j, -j] for j in range(1, n_channels + 1)]
     write_snapshot(raw_dir / "2003.10.22.12.00.00", columns)
 
-    df = extract_experiment_features(raw_dir, channel_idx=cfg.channel_idx)
+    df = extract_experiment_features(raw_dir, experiment=experiment_name, channel_idx=cfg.channel_idx)
 
     expected_signal = np.array(columns[cfg.channel_idx], dtype=np.float32)
     assert df["rms"].iloc[0] == pytest.approx(compute_rms(expected_signal))
     assert df["kurtosis"].iloc[0] == pytest.approx(compute_kurtosis(expected_signal))
+    assert df["experiment"].iloc[0] == experiment_name
+
+
+def test_experiment_column_allows_unambiguous_grouping_after_concat(tmp_path):
+    """Issue #43 AC 2: the three experiments' outputs, once concatenated (as a
+    downstream `pd.concat` over the written parquet files would do), must be
+    filterable/groupable by `experiment` alone -- without relying on filename or
+    row order to tell the test sets apart."""
+    frames = []
+    for i, experiment_name in enumerate(EXPERIMENTS):
+        raw_dir = tmp_path / experiment_name
+        raw_dir.mkdir()
+        write_snapshot(raw_dir / "2003.10.22.12.00.00", [[float(i), -float(i)]])
+        frames.append(
+            extract_experiment_features(raw_dir, experiment=experiment_name, channel_idx=0)
+        )
+
+    combined = pd.concat(frames, ignore_index=True)
+
+    assert set(combined["experiment"]) == set(EXPERIMENTS)
+    for experiment_name in EXPERIMENTS:
+        subset = combined[combined["experiment"] == experiment_name]
+        assert len(subset) == 1
 
 
 # --- versioning: code hash -------------------------------------------------------
