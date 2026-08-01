@@ -191,8 +191,13 @@ prior context:
 - [ ] `/predict` endpoint accepts a feature window and returns a health-state prediction
       (Normal / Degrading / Critical) with a response time under 500ms (single-window,
       no batch queueing — see Section 7).
-- [ ] At least one MLflow run is visible, showing the trained model, its metrics, and its
-      parameters — not just a pickled file with no lineage.
+- [x] At least one MLflow run is visible, showing the trained model, its metrics, and its
+      parameters — not just a pickled file with no lineage. Seven runs across two
+      experiments (`m3-imbalance-comparison`, `m3-baseline-ablation`), covering #21's five
+      imbalance arms and #72's baseline/ablation configurations, logged to a local SQLite
+      store (`mlflow.db`). Verify with `mlflow ui --backend-store-uri sqlite:///mlflow.db`
+      or `mlflow.search_runs(...)` — see `docs/mlflow_tracking.md` for the full dependency
+      rationale and an exact-match check against the already-published metrics.
 - [ ] `/metrics` endpoint is live and scraped by a local Prometheus instance; a Grafana
       dashboard (or equivalent) shows at least one real signal (predicted-class distribution
       or input feature stats) updating as the demo script plays back a bearing's run-to-failure
