@@ -128,10 +128,20 @@ quoted as the project's number**. Three things follow that later work should not
   further toward rare classes, which compounds the over-alarming above rather than
   isolating it. Still open.
 
-Remaining for M3: MLflow tracking (`docs/PRD.md` §10 requires at least one visible run;
-#72's own acceptance criteria did not include it, so it was deliberately left out of that
-PR) and a servable model artifact — #72 deliberately persists none, since LOEO trains three
-models per configuration and there is no single "the model" to save.
+- **#74** — `src/training/mlflow_tracking.py` instruments #21's and #72's LOEO comparisons
+  with MLflow (`docs/PRD.md` §10/§11's requirement, deliberately left out of #72's own
+  acceptance criteria and deferred here). Seven runs across two experiments
+  (`m3-imbalance-comparison`: #21's five arms; `m3-baseline-ablation`: #72's `full`/
+  `no_rms_ratio` configurations), logged metrics verified to match
+  `docs/class_imbalance_decision.md`/`docs/model_training_decision.md` exactly
+  (`docs/mlflow_tracking.md`). Dependency is `mlflow-skinny` + `sqlalchemy` + `alembic`,
+  not the full `mlflow` package — full `mlflow` pins `pandas<3`, which silently downgrades
+  this project's pinned `pandas==3.0.5` (Issue #27) on install; verified empirically before
+  choosing the lighter combination. Tracking store is local SQLite (`mlflow.db`,
+  gitignored, per-clone), not MLflow's plain file store, which is now in maintenance mode.
+
+Remaining for M3: a servable model artifact — #72 deliberately persists none, since LOEO
+trains three models per configuration and there is no single "the model" to save.
 
 ## When in doubt
 
