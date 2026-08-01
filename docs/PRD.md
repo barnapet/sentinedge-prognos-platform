@@ -226,14 +226,22 @@ since M1.5 was project hygiene rather than a product milestone.
   to classification in Section 6, before Milestone 1 begins.
 - Keep the "why not Kubernetes / why not Machina yet" reasoning documented, since a reviewer
   familiar with over-engineered portfolio projects will specifically notice restraint.
-- **Data versioning for processed feature caches (future concern, not solved now):** from M2
+- ~~**Data versioning for processed feature caches (future concern, not solved now):** from M2
   onward, feature-cache files built under `data/processed/` will need versioning /
   reproducibility guarantees — if the labeling logic, feature-extraction code, or raw dataset
   changes, a stale cached feature file could silently get reused in modeling without anyone
   noticing. Rough direction to revisit in M2/M3: hash the generating code + raw data version
   into the cache filename/directory, or keep a simple manifest recording which commit/config
-  produced each cache. Not blocking M2 start; noted here so it isn't forgotten once caches
-  start accumulating (Issue #24).
+  produced each cache~~ (Issue #24) — **resolved** in M2, Issue #41: both halves of that rough
+  direction were implemented rather than one. `src/features/versioning.py` hashes the
+  generating code (`extraction.py` + `versioning.py`) and the raw dataset (filename+size
+  fingerprint per experiment) into a `combined_hash`, and every parquet output is written
+  alongside a `data/processed/<name>_features_manifest.json` recording that hash, the
+  generation timestamp, the feature columns, and the row count. A consumer can therefore detect
+  a stale cache by recomputing the hash — which
+  `notebooks/04_feature_pipeline_validation.ipynb` Section 2 does as an executable check on
+  every CI run. Full rationale (why filename+size rather than full content hashing, why one
+  manifest per experiment, why labels are not in this output): `docs/feature_extraction_versioning.md`.
 
 ## 13. Out-of-scope, Future Phase Ideas (not commitments)
 
