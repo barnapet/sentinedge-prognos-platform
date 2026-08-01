@@ -2,8 +2,12 @@
 
 Extracted from notebooks/02_health_state_labeling.ipynb during M1.5-Housekeeping
 (Issue #19), so the core labeling logic can be unit tested independently of full
-notebook execution. See notebooks/02_health_state_labeling.ipynb for the full
-derivation narrative behind these constants and the threshold rule.
+notebook execution. `derive_critical_multiple` followed in Issue #65, for the same
+reason and by the same pattern -- it is the one input `assign_labels` cannot supply
+itself, and M3 needs it importable rather than notebook-bound (anticipated in
+docs/feature_extraction_versioning.md Section 1). See
+notebooks/02_health_state_labeling.ipynb for the full derivation narrative behind
+these constants and the threshold rule.
 """
 from __future__ import annotations
 
@@ -14,6 +18,18 @@ LABELS = ["Normal", "Degrading", "Critical"]
 
 # Carried over from Issue #9 (do not change without re-running #9's analysis).
 ONSET_MULTIPLE = 1.3
+
+# Derived in notebooks/02_health_state_labeling.ipynb, Section 2b: the Critical boundary
+# sits at the geometric midpoint (f = 0.5) of each bearing's own onset -> peak span.
+# Geometric rather than arithmetic because the quantity being split is itself a ratio and
+# degradation compounds multiplicatively; the notebook's Section 2b sensitivity sweep shows
+# f = 0.5 sits inside a smooth region, not on a cliff edge.
+CRITICAL_SPAN_FRACTION = 0.5
+
+# Rounding pinned by Issue #65 -- see derive_critical_multiple's docstring for why these are
+# part of the contract rather than presentation detail.
+PEAK_RATIO_DECIMALS = 2
+CRITICAL_MULTIPLE_DECIMALS = 3
 
 # Derived in notebooks/02_health_state_labeling.ipynb, Section 3
 # ("near-zero" = raw RMS below this fraction of the recent Critical level).
@@ -28,6 +44,61 @@ COLLAPSE_FRACTION = 0.2
 # across a 0.04-0.10 sweep. Not re-derivable from this module alone -- see
 # docs/label_hysteresis_decision.md for the full investigation.
 HYSTERESIS_MARGIN = 0.05
+
+
+def derive_critical_multiple(
+    peak_ratio: float,
+    span_fraction: float = CRITICAL_SPAN_FRACTION,
+) -> float:
+    """Derive one experiment's Critical threshold from its own peak rolling RMS ratio.
+
+    Interpolates in log space between `ONSET_MULTIPLE` and the worst rolling RMS ratio
+    that bearing actually reached:
+
+        critical_multiple = onset_multiple * (peak_ratio / onset_multiple) ** span_fraction
+
+    At the default `span_fraction = 0.5` this is the geometric midpoint,
+    `sqrt(onset_multiple * peak_ratio)`. Extracted from
+    notebooks/02_health_state_labeling.ipynb Section 2b (Issue #65), the same way
+    `assign_labels` was extracted in Issue #19; that notebook carries the full derivation
+    narrative, including why a single global multiplier does not work across three
+    experiments whose peak ratios span 2.5x.
+
+    Note this is a **retrospective** quantity: `peak_ratio` is the maximum over a completed
+    run-to-failure experiment, so it is not knowable at inference time. That is a documented
+    property of the labeling scheme, not a defect -- see docs/eda_findings.md Section 3
+    (Issue #62) for the statement of it, and Section 2b of the notebook for the fixed ~2.6x
+    fallback recorded for serving.
+
+    **The rounding is part of the contract, not presentation.** The notebook derives these
+    values through `summarize()`, which rounds the peak ratio to 2 decimals before the
+    formula, and then rounds the result to 3 decimals. Those rounded results -- 1.932 /
+    2.866 / 3.049 -- are the values already published in docs/eda_findings.md Section 3 and
+    hardcoded in notebooks/04_feature_pipeline_validation.ipynb's `CRITICAL_MULTIPLE`. An
+    implementation that skipped the rounding would return 1.931235 / 2.867072 / 3.049334
+    instead, silently disagreeing with both. So the rounding is replicated here rather than
+    dropped as a tidy-up. It is safe to pin: applying it changes **no labels at all** (both
+    paths produce 1906/233/17, 651/310/23, 6158/99/67 -- the closed table in
+    docs/eda_findings.md Section 3) and leaves the notebook's own f = 0.40-0.65 sensitivity
+    sweep unchanged in every cell. Do not "simplify" it away; `tests/test_labeling.py` guards
+    against that.
+
+    Args:
+        peak_ratio: The experiment's maximum `rms_ratio` (10-file rolling mean of RMS over
+            the first-50-file baseline mean -- the same series `assign_labels` thresholds).
+            Passed raw; this function applies the 2-decimal rounding itself, so callers do
+            not need to pre-round, and passing an already-rounded value is equivalent.
+        span_fraction: How far along the log-space onset -> peak span to place the boundary.
+            Defaults to the derived `CRITICAL_SPAN_FRACTION`; exposed as a parameter only so
+            the notebook's sensitivity sweep can vary it.
+
+    Returns:
+        The per-experiment `critical_multiple`, rounded to 3 decimals, ready to pass to
+        `assign_labels`.
+    """
+    rounded_peak = round(peak_ratio, PEAK_RATIO_DECIMALS)
+    critical_multiple = ONSET_MULTIPLE * (rounded_peak / ONSET_MULTIPLE) ** span_fraction
+    return float(round(critical_multiple, CRITICAL_MULTIPLE_DECIMALS))
 
 
 def _hysteresis_ranks(
