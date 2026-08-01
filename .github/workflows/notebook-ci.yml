@@ -3,6 +3,14 @@ name: Notebook CI
 on:
   pull_request:
     branches: [main]
+  # Also run after a merge, purely so the dataset cache gets written on the default
+  # branch. Actions caches are branch-scoped: an entry created on a PR ref is readable
+  # only from that ref, while entries created on the default branch are readable from
+  # every branch. With a pull_request-only trigger no cache was ever written to `main`,
+  # so every PR started cold and re-downloaded ~1.1 GB (Issue #57). The post-merge run
+  # also serves as a check that `main` itself stays green.
+  push:
+    branches: [main]
 
 jobs:
   notebook-execution:
