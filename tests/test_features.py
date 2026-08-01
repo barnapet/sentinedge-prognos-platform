@@ -1,9 +1,12 @@
+import json
 import math
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from src.features import build_dataset
+from src.features.build_dataset import build_experiment, main
 from src.features.extraction import (
     EXPERIMENTS,
     FEATURE_COLUMNS,
@@ -613,3 +616,168 @@ def test_reproducibility_breaks_if_raw_data_changes(tmp_path):
     after = compute_combined_hash(code_hash, compute_raw_dataset_version(raw_dir))
 
     assert before != after
+
+
+# --- build_dataset: build_experiment / main (Issue #55) --------------------------
+#
+# build_experiment() is what actually produces M3's input: it ties extraction and
+# versioning together and writes both artifacts to disk. Before Issue #55 it was only
+# exercised indirectly, through the CI execution of
+# notebooks/04_feature_pipeline_validation.ipynb -- i.e. only against the real 6.2 GB
+# dataset. These tests cover it directly, on synthetic snapshots, using the same
+# write_snapshot() fixture pattern as the extraction tests above.
+
+def write_experiment_raw_dir(raw_root, experiment, n_files=3, n_channels=8):
+    """Create `<raw_root>/<experiment>/` with `n_files` synthetic snapshots.
+
+    Mirrors the real layout build_experiment() expects: it is handed the *parent*
+    directory and appends the experiment name itself. Every channel carries a
+    distinct, non-constant signal, so reading the wrong column is detectable.
+    """
+    raw_dir = raw_root / experiment
+    raw_dir.mkdir(parents=True)
+    for i in range(n_files):
+        columns = [[float(j + i), -float(j + i), float(j), -float(j)] for j in range(1, n_channels + 1)]
+        write_snapshot(raw_dir / f"2003.10.22.12.{i:02d}.00", columns)
+    return raw_dir
+
+
+def test_build_experiment_writes_parquet_and_manifest_to_expected_paths(tmp_path):
+    """Both artifacts, at the exact documented filenames
+    (docs/feature_extraction_versioning.md Section 3), and the output directory is
+    created if it does not exist yet."""
+    raw_root = tmp_path / "raw"
+    write_experiment_raw_dir(raw_root, "2nd_test")
+    processed_dir = tmp_path / "processed"  # deliberately not pre-created
+
+    returned = build_experiment("2nd_test", raw_dir=raw_root, processed_dir=processed_dir)
+
+    parquet_path = processed_dir / "2nd_test_features.parquet"
+    manifest_path = processed_dir / "2nd_test_features_manifest.json"
+    assert returned == parquet_path
+    assert parquet_path.is_file()
+    assert manifest_path.is_file()
+
+
+@pytest.mark.parametrize("experiment_name", ["1st_test", "2nd_test", "3rd_test"])
+def test_build_experiment_parquet_matches_direct_extraction(tmp_path, experiment_name):
+    """The written parquet must be exactly what extract_experiment_features() returns
+    for the same input -- build_experiment() adds no transformation, reordering, or
+    dtype drift on the way to disk. Run per experiment, so the documented tracked
+    channel (EXPERIMENTS[...].channel_idx, docs/eda_findings.md Section 1) is also
+    confirmed to be wired through rather than defaulted."""
+    raw_root = tmp_path / "raw"
+    raw_dir = write_experiment_raw_dir(raw_root, experiment_name)
+
+    parquet_path = build_experiment(
+        experiment_name, raw_dir=raw_root, processed_dir=tmp_path / "processed"
+    )
+
+    written = pd.read_parquet(parquet_path)
+    expected = extract_experiment_features(
+        raw_dir, experiment=experiment_name, channel_idx=EXPERIMENTS[experiment_name].channel_idx
+    )
+    pd.testing.assert_frame_equal(written, expected)
+    assert list(written.columns) == FEATURE_COLUMNS
+
+
+def test_build_experiment_manifest_fields_match_the_written_parquet(tmp_path):
+    """Every manifest field is populated from the run that produced the accompanying
+    parquet -- not stubbed, and not describing a different input. n_files in
+    particular is the integrity cross-check docs/feature_extraction_versioning.md
+    Section 4 relies on, so it must equal the actual row count on disk."""
+    raw_root = tmp_path / "raw"
+    raw_dir = write_experiment_raw_dir(raw_root, "3rd_test", n_files=5)
+
+    parquet_path = build_experiment(
+        "3rd_test", raw_dir=raw_root, processed_dir=tmp_path / "processed"
+    )
+    manifest = json.loads((parquet_path.parent / "3rd_test_features_manifest.json").read_text())
+    written = pd.read_parquet(parquet_path)
+
+    assert manifest["experiment"] == "3rd_test"
+    assert manifest["code_hash"] == compute_code_hash()
+    assert manifest["raw_dataset_version"] == compute_raw_dataset_version(raw_dir)
+    assert manifest["combined_hash"] == compute_combined_hash(
+        manifest["code_hash"], manifest["raw_dataset_version"]
+    )
+    assert manifest["feature_columns"] == FEATURE_COLUMNS == list(written.columns)
+    assert manifest["n_files"] == len(written) == 5
+    # UTC ISO-8601, per the manifest schema -- parseable and timezone-aware, not a bare
+    # local-time string a consumer would have to guess the offset for.
+    generated_at = pd.Timestamp(manifest["generated_at"])
+    assert generated_at.tz is not None
+
+
+def test_build_experiment_is_reproducible_for_unchanged_code_and_raw_data(tmp_path):
+    """The reproducibility promise in src/features/build_dataset.py's docstring, at the
+    level that actually makes it: re-running against unchanged code and unchanged raw
+    data reproduces the same combined_hash *and* the same parquet content. Written to
+    two separate output directories so the second run cannot be reading the first's
+    artifacts."""
+    raw_root = tmp_path / "raw"
+    write_experiment_raw_dir(raw_root, "1st_test")
+
+    first = build_experiment("1st_test", raw_dir=raw_root, processed_dir=tmp_path / "run_a")
+    second = build_experiment("1st_test", raw_dir=raw_root, processed_dir=tmp_path / "run_b")
+
+    manifest_a = json.loads((first.parent / "1st_test_features_manifest.json").read_text())
+    manifest_b = json.loads((second.parent / "1st_test_features_manifest.json").read_text())
+
+    assert manifest_a["combined_hash"] == manifest_b["combined_hash"]
+    assert manifest_a["code_hash"] == manifest_b["code_hash"]
+    assert manifest_a["raw_dataset_version"] == manifest_b["raw_dataset_version"]
+    pd.testing.assert_frame_equal(pd.read_parquet(first), pd.read_parquet(second))
+
+
+def test_build_experiment_combined_hash_changes_when_raw_data_changes(tmp_path):
+    """Counterpart to the reproducibility test above: without this, a combined_hash that
+    ignored its inputs entirely would still pass. Adding a snapshot must change the
+    hash, which is the whole point of the stale-cache detection
+    (docs/PRD.md Section 12, Issue #41)."""
+    raw_root = tmp_path / "raw"
+    raw_dir = write_experiment_raw_dir(raw_root, "2nd_test")
+
+    before = json.loads(
+        (
+            build_experiment("2nd_test", raw_dir=raw_root, processed_dir=tmp_path / "before").parent
+            / "2nd_test_features_manifest.json"
+        ).read_text()
+    )
+
+    write_snapshot(raw_dir / "2003.10.22.13.00.00", [[1.0, -1.0, 1.0, -1.0]] * 8)
+
+    after = json.loads(
+        (
+            build_experiment("2nd_test", raw_dir=raw_root, processed_dir=tmp_path / "after").parent
+            / "2nd_test_features_manifest.json"
+        ).read_text()
+    )
+
+    assert before["combined_hash"] != after["combined_hash"]
+    assert after["n_files"] == before["n_files"] + 1
+
+
+def test_main_builds_every_experiment_in_the_registry(monkeypatch, capsys):
+    """main() must cover all three experiments, with no silent omission.
+
+    build_experiment itself is substituted rather than redirected: its raw_dir /
+    processed_dir defaults are bound to the repo-absolute RAW_DIR / PROCESSED_DIR at
+    import time, and main() calls it without arguments, so monkeypatching those module
+    globals would not reach the frozen defaults. Substituting the function is what keeps
+    this test off the real data/raw/ tree.
+    """
+    calls = []
+
+    def fake_build_experiment(name):
+        calls.append(name)
+        return build_dataset.PROCESSED_DIR / f"{name}_features.parquet"
+
+    monkeypatch.setattr(build_dataset, "build_experiment", fake_build_experiment)
+
+    main()
+
+    assert calls == list(EXPERIMENTS)
+    printed = capsys.readouterr().out
+    for name in EXPERIMENTS:
+        assert name in printed
