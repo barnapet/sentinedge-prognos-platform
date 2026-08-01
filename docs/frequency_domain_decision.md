@@ -144,6 +144,15 @@ Critical/Normal ratio of the mean, per feature. A working defect feature should 
 | `2nd_test` | outer race → expect **BPFO** | **1.08x** | 0.85x | ✅ BPFO > BPFI |
 | `3rd_test` | outer race → expect **BPFO** | **1.57x** | 1.44x | ✅ BPFO > BPFI |
 
+> **Bootstrap intervals (Issue #63).** These ratios are computed on the `Critical` class, which is
+> 17 / 23 / 67 files. `docs/uncertainty_quantification.md` §4 puts 95% intervals on all six. The
+> comparative claim below — fault-matched frequency responds more strongly, in all three — survives.
+> One cell needs a caveat: **`2nd_test`'s `bpfo_env` 1.08x interval includes 1.0** (i.i.d.
+> [0.93, 1.27], block [0.90, 1.12]), so for that experiment the *absolute* "> 1" criterion stated
+> just above is not established at 95% confidence, even though BPFO > BPFI still holds (BPFI's
+> interval lies entirely below 1.0). The `1st_test` figures, most exposed to the 17-file sample,
+> both exclude 1.0. No value in the table changes, and the drop decision in §6 is unaffected.
+
 **In all three experiments the defect frequency matching the documented fault mode responds more
 strongly than the other one.** That is a genuine, independent confirmation that the bearing
 geometry (Section 1), the derived frequencies (Section 2), and the envelope implementation
@@ -202,7 +211,9 @@ convention is not something to hand to M3 as settled — the fixed-band approach
 is what is fragile here (see Section 7).
 
 **6d. Spectral kurtosis fails outright and is largely redundant.** Within-experiment pooled
-F = **0.8** — no separability at all. Per experiment it reaches only 55.8 / 26.1 / 3.9, and it
+F = **0.8** — no separability at all (Issue #63 attached a p-value to this: **p = 0.445**, the only
+test in either family that fails to reach significance — `docs/uncertainty_quantification.md` §3).
+Per experiment it reaches only 55.8 / 26.1 / 3.9, and it
 declines toward Critical in `2nd_test` (SK 1.35 → 1.00). It also correlates **0.76** with
 time-domain `kurtosis` in the pooled Degrading+Critical window (0.71 in `1st_test`), so what
 little it carries largely restates a feature already in the set. Both the "adds independent
