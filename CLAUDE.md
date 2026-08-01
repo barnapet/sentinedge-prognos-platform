@@ -71,7 +71,24 @@ The M1.5-Housekeeping stretch that followed close-out is also complete (CI pipel
 tests, README, pinned dependencies, notebook-output policy, data-versioning note, and these
 conventions — Issues #18, #19, #24, #25, #26, #27, #28, #29 all closed). This was tracked
 informally as "M1.5" in CLAUDE.md/Issues only, not a PRD milestone (PRD Section 11 notes it
-without renumbering). M2 (feature pipeline) is next.
+without renumbering).
+
+**M2-Features is complete** — all eight of its Issues are closed with merged PRs: #40
+(rolling-window decision), #20 (onset-boundary hysteresis), #41 (core feature module +
+code/data versioning), #43 (`experiment` column), #42 (validation notebook), #23
+(skewness/crest factor redundancy), #22 (frequency-domain investigation), #49 (refresh of
+figures made stale by #20). What it produced:
+
+- `src/features/` — `extraction.py` (the pipeline), `versioning.py` (code+data hashing),
+  `build_dataset.py` (CLI entrypoint), `candidate_features.py` (evaluated-but-unused).
+- `data/processed/<name>_features.parquet` + `<name>_features_manifest.json` per experiment.
+- `notebooks/04_feature_pipeline_validation.ipynb`, and five decision notes under `docs/`.
+- Retained feature set: `rms`/`rms_ratio`, `kurtosis`, `skewness`/`skewness_smoothed`. Crest
+  factor (#23) and the BPFO/BPFI/spectral-kurtosis features (#22) were evaluated and dropped —
+  kept, tested, in `candidate_features.py` rather than deleted.
+
+M3-Model (baseline classifier, MLflow tracking) is next. Its one already-tracked prerequisite
+is Issue #21 (class imbalance — see `docs/eda_findings.md` Section 3).
 
 ## When in doubt
 

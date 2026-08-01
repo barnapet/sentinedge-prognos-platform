@@ -127,8 +127,10 @@ correlation with kurtosis in `1st_test` (0.88 → 0.54). **This does not change 
 decision**: even smoothed, `2nd_test`/`3rd_test`'s F-statistics (34.6, 175.9) remain far below
 kurtosis's (322.3, 807.9) — crest factor stays both weak and at least moderately redundant in the
 two experiments where it isn't already explained by kurtosis. The non-monotonicity `docs/eda_findings.md`
-flagged for `1st_test` (`Normal` 5.31 → `Degrading` 11.77 → `Critical` 9.67, falling back down)
-also persists after smoothing (`5.15` → `10.96` → `10.05`) — smoothing doesn't fix the property
+flagged for `1st_test` (`Normal` 5.17 → `Degrading` 10.89 → `Critical` 9.67, falling back down —
+the current-labeling values; `docs/eda_findings.md`'s *original*, pre-#20 figures were
+`5.31` → `11.77` → `9.67`, same shape) also persists after smoothing (`5.15` → `10.96` →
+`10.05`, likewise computed under the current labeling) — smoothing doesn't fix the property
 that made a hand-designed threshold awkward for this feature in the first place. **Conclusion: the
 open windowing question is resolved as moot** — crest factor doesn't survive the keep/drop
 decision regardless of window, so there's no operative windowing choice left to make.

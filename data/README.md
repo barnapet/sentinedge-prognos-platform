@@ -38,14 +38,31 @@ unrar x -y 2nd_test.rar
 unrar x -y 3rd_test.rar
 ```
 
-**Known archive quirks** (present in the original NASA distribution, not introduced here):
-- Each RAR extracts into a redundant nested folder (e.g. `1st_test/1st_test/`).
-- `3rd_test.rar` internally names its top-level folder `4th_test`, and nests the actual data
-  one level deeper under a `txt/` subfolder (`3rd_test/4th_test/txt/`).
+**Known archive quirks** (present in the original NASA distribution, not introduced here) —
+corrected against the actual extraction performed by `.github/workflows/notebook-ci.yml`, which
+downloads and lays out the dataset from scratch on every PR:
+- `1st_test.rar` and `2nd_test.rar` each extract to a single folder named after the experiment
+  (`IMS_extracted/1st_test/`, `IMS_extracted/2nd_test/`) containing the snapshot files
+  directly — no redundant second level.
+- `3rd_test.rar` internally names its top-level folder **`4th_test`**, and nests the actual data
+  one level deeper under a `txt/` subfolder — so the data lands in `IMS_extracted/4th_test/txt/`,
+  with no `3rd_test/` component in the path at all.
 
-After extraction, flatten so the final layout matches [Structure](#structure) below — move the
-innermost per-experiment folder up to `data/raw/<Nth>_test/`, and discard the intermediate
-`nasa_bearings.zip`, `4. Bearings/`, and `IMS_extracted/` scaffolding.
+After extraction, flatten so the final layout matches [Structure](#structure) below, then discard
+the intermediate `nasa_bearings.zip`, `4. Bearings/`, and `IMS_extracted/` scaffolding:
+
+```bash
+cd ..                       # back to data/
+mkdir -p raw
+mv IMS_extracted/1st_test    raw/1st_test
+mv IMS_extracted/2nd_test    raw/2nd_test
+mv IMS_extracted/4th_test/txt raw/3rd_test     # note: 4th_test/txt, not 3rd_test/
+rm -rf nasa_bearings.zip "4. Bearings" IMS_extracted
+```
+
+(These are the same moves the CI workflow performs; if the upstream archive layout ever changes,
+the CI's `find data/IMS_extracted -maxdepth 4 -type d` debug step prints the structure it
+actually got.)
 
 ## Structure
 
