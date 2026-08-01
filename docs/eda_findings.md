@@ -197,8 +197,14 @@ list. Full derivation and correlation tables: `03_feature_candidate_screening.ip
   that investigation and was ruled out separately in Issue #59 without being run — at constant
   shaft speed the confound (belt-slip speed wander, unmeasurable here for want of a tachometer
   channel) is larger than the effect. See that document's Section 8.
-- Class imbalance (81:1) must be handled explicitly in M3's training approach (class weights or
-  resampling) and evaluation (per-class recall). Tracked as Issue #21.
+- ~~Class imbalance (81:1) must be handled explicitly in M3's training approach (class weights or
+  resampling) and evaluation (per-class recall). Tracked as Issue #21.~~ — **resolved** in M3,
+  Issue #21: five approaches (untreated control, `class_weight='balanced'`, random over- and
+  undersampling, and post-hoc prior correction) were compared under the LOEO protocol
+  (`docs/evaluation_protocol.md`). `class_weight='balanced'` was adopted. The headline finding is
+  a null one worth carrying forward: on the current feature set no approach, including the
+  control, is distinguishable from the others on `Critical` recall — the differences trace to
+  ±2 rows on one fold. See `docs/class_imbalance_decision.md`.
 
 ## Validation performed (Issue #11, M1-EDA)
 

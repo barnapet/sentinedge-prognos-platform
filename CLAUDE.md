@@ -87,8 +87,25 @@ figures made stale by #20). What it produced:
   factor (#23) and the BPFO/BPFI/spectral-kurtosis features (#22) were evaluated and dropped —
   kept, tested, in `candidate_features.py` rather than deleted.
 
-M3-Model (baseline classifier, MLflow tracking) is next. Its one already-tracked prerequisite
-is Issue #21 (class imbalance — see `docs/eda_findings.md` Section 3).
+**M3-Model (baseline classifier, MLflow tracking) is in progress.** Its preparation sequence
+is #65 → #67 → #69 → #21 → model training + `rms_ratio` ablation; the first four are done:
+
+- **#65** — `derive_critical_multiple` extracted into `src/labeling.py`, tested.
+- **#67** — `src/features/build_training_dataset.py` joins the feature parquets with labels
+  into `data/processed/training_dataset.parquet` (`docs/training_dataset_versioning.md`).
+- **#69** — `docs/evaluation_protocol.md` commits to leave-one-experiment-out (LOEO) and to
+  `Critical`-class recall as the headline metric. Written before any model existed, on
+  purpose; **do not re-decide the metric or the split** when implementing training.
+- **#21** — `src/training/` compares five class-imbalance approaches under LOEO;
+  `class_weight='balanced'` adopted (`docs/class_imbalance_decision.md`). Added
+  `scikit-learn` as the one new dependency.
+
+Remaining for M3: the model training step itself, which must include the `rms_ratio`
+ablation (Issue #67 Task 3 — `rms_ratio` is both the strongest feature and the signal the
+labels are thresholded from, so its contribution has to be measured rather than assumed).
+Two findings are handed to it explicitly, both in `docs/class_imbalance_decision.md`: the
+`1st_test` fold's collapse is a raw-`rms` feature-scale problem, not an imbalance one
+(§4), and `prior_correction` becomes the arm to beat once `rms_ratio` is removed (§6).
 
 ## When in doubt
 

@@ -8,6 +8,12 @@ pandas==3.0.5
 numpy==2.4.6
 matplotlib==3.11.1
 scipy==1.17.1
+# Added in M3 (Issue #21): the baseline classifier, the LOEO metrics, and
+# class_weight='balanced' for the class-imbalance comparison. `imbalanced-learn` was
+# deliberately NOT added alongside it -- the only thing it would have provided is SMOTE,
+# and plain random over/undersampling is a few lines of numpy. See
+# docs/class_imbalance_decision.md Section 2.
+scikit-learn==1.9.0
 jupyter==1.1.1
 pytest==9.1.1
 pyarrow==25.0.0
