@@ -101,7 +101,7 @@ revisited before the health-state classifier is working end-to-end.
 
 | Metric | Target |
 |---|---|
-| Model performance | Reasonable classification accuracy/F1 on held-out run(s) — exact number TBD once EDA is done; report honestly rather than chasing a number |
+| Model performance | Evaluated via leave-one-experiment-out (LOEO) — see `docs/evaluation_protocol.md` for the full protocol, the label-leakage rationale for why LOEO rather than a random/stratified split, and the committed primary metric (per-class recall/precision, headlined by `Critical`-class recall); report honestly rather than chasing a number |
 | Serving latency | <500ms for single-window inference, local container, no batch queueing — not framed as a production SLA |
 | Reproducibility | Fresh clone → running demo in <15 min following README |
 | Monitoring | At least one drift/health signal (e.g., input feature distribution shift) visible on a dashboard, not just logged |
