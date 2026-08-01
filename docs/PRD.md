@@ -101,11 +101,43 @@ revisited before the health-state classifier is working end-to-end.
 
 | Metric | Target |
 |---|---|
-| Model performance | Evaluated via leave-one-experiment-out (LOEO) — see `docs/evaluation_protocol.md` for the full protocol, the label-leakage rationale for why LOEO rather than a random/stratified split, and the committed primary metric (per-class recall/precision, headlined by `Critical`-class recall); report honestly rather than chasing a number |
+| Model performance | Evaluated via leave-one-experiment-out (LOEO) — see `docs/evaluation_protocol.md` for the full protocol, the label-leakage rationale for why LOEO rather than a random/stratified split, and the committed primary metric (per-class recall/precision, headlined by `Critical`-class recall); report honestly rather than chasing a number. **Measured (M3 baseline, Issue #72): `Critical` recall 0.059 / 0.913 / 1.000 across the three folds — see the note below, which is part of this row, not a caveat on it** |
 | Serving latency | <500ms for single-window inference, local container, no batch queueing — not framed as a production SLA |
 | Reproducibility | Fresh clone → running demo in <15 min following README |
 | Monitoring | At least one drift/health signal (e.g., input feature distribution shift) visible on a dashboard, not just logged |
 | Documentation | README explains architecture, scoping decisions, and what was deliberately left out |
+
+> **The M3 baseline works on two of three bearings and fails on the third. Recorded here
+> rather than in the decision doc alone, so the headline row above cannot be quoted without
+> it** (Issue #72, full evidence in `docs/model_training_decision.md`).
+>
+> | Fold | `Critical` recall | `Critical` precision | `Normal` recall | Macro-F1 |
+> |---|---|---|---|---|
+> | `2nd_test` | 0.913 | 0.750 | 1.000 | 0.936 |
+> | `3rd_test` | 1.000 | 0.859 | 0.999 | 0.945 |
+> | `1st_test` | **0.059** | 1.000 *(one prediction)* | **0.074** | **0.152** |
+>
+> **The cross-fold mean (`Critical` recall 0.657) describes no fold and is not this
+> project's headline number.** `docs/evaluation_protocol.md` §5 requires a sharply
+> divergent fold to be stated rather than averaged away; this is that case.
+>
+> The `1st_test` failure is diagnosed, not mysterious, and has two independent causes:
+> raw RMS amplitude does not transfer between bearings (`1st_test`'s *minimum* raw RMS
+> exceeds both other experiments' *means*), and all 17 of its `Critical` rows lie below the
+> lowest `rms_ratio` its training fold ever labelled `Critical`, making them unreachable by
+> any boundary learned from the other two experiments. The second cause is a property of the
+> per-experiment `critical_multiple` derivation (§6, `docs/eda_findings.md` §3), so it
+> constrains any model trained on these labels — not just this baseline. Three leakage-safe
+> and one protocol-violating remedy were measured; none resolves it, and the reasoning is in
+> `docs/model_training_decision.md` §4.
+>
+> Two further honest limits on the numbers above: the `rms_ratio` ablation required by
+> Issue #67 Task 3 *raises* mean `Critical` recall (0.657 → 0.892) while collapsing
+> precision (0.870 → 0.603) — the gain is over-alarming, not capability, and on `1st_test`
+> that configuration predicts `Normal` for zero of 1,906 truly-`Normal` rows. And the two
+> folds that work are both outer-race failures while the failing one is the only inner-race
+> experiment, which `docs/evaluation_protocol.md` §6 already notes cannot be separated from
+> "fails on this particular bearing" at *n* = 1.
 
 ## 8. Proposed Architecture (MVP)
 

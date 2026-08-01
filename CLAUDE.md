@@ -88,7 +88,7 @@ figures made stale by #20). What it produced:
   kept, tested, in `candidate_features.py` rather than deleted.
 
 **M3-Model (baseline classifier, MLflow tracking) is in progress.** Its preparation sequence
-is #65 → #67 → #69 → #21 → model training + `rms_ratio` ablation; the first four are done:
+is #65 → #67 → #69 → #21 → #72 (model training + `rms_ratio` ablation); all five are done:
 
 - **#65** — `derive_critical_multiple` extracted into `src/labeling.py`, tested.
 - **#67** — `src/features/build_training_dataset.py` joins the feature parquets with labels
@@ -100,12 +100,38 @@ is #65 → #67 → #69 → #21 → model training + `rms_ratio` ablation; the fi
   `class_weight='balanced'` adopted (`docs/class_imbalance_decision.md`). Added
   `scikit-learn` as the one new dependency.
 
-Remaining for M3: the model training step itself, which must include the `rms_ratio`
-ablation (Issue #67 Task 3 — `rms_ratio` is both the strongest feature and the signal the
-labels are thresholded from, so its contribution has to be measured rather than assumed).
-Two findings are handed to it explicitly, both in `docs/class_imbalance_decision.md`: the
-`1st_test` fold's collapse is a raw-`rms` feature-scale problem, not an imbalance one
-(§4), and `prior_correction` becomes the arm to beat once `rms_ratio` is removed (§6).
+- **#72** — `src/training/train_baseline.py` trains the `class_weight='balanced'` baseline
+  under LOEO and runs the `rms_ratio` ablation as a first-class comparison
+  (`docs/model_training_decision.md`). Rejected scaling approaches kept, tested, in
+  `candidate_scalers.py` — same convention as `src/features/candidate_features.py`.
+
+**The headline result is that the baseline works on two bearings and fails on the third,
+and this is reported rather than averaged away** (`docs/PRD.md` §7 carries the note, not
+just the decision doc). `Critical` recall is 0.913 / 1.000 on `2nd_test`/`3rd_test` and
+0.059 on `1st_test`; the cross-fold mean (0.657) describes no fold and **should not be
+quoted as the project's number**. Three things follow that later work should not re-derive:
+
+- The `1st_test` fold has **two** independent failures, not the one #21 handed forward.
+  The raw-`rms` scale problem (§3a) destroys `Normal` recall and is fixable; the
+  **threshold-transfer problem (§3b) destroys `Critical` recall and is not** — all 17 of
+  its `Critical` rows sit below the lowest `rms_ratio` its training fold ever labelled
+  `Critical`, so no boundary learned from the other two can reach them. That is a property
+  of the per-experiment `critical_multiple`, so it constrains **any** model trained on
+  these labels. The next lever is the label/feature definition, not the estimator.
+- **The ablation's headline gain is not a capability gain.** Removing `rms_ratio` raises
+  mean `Critical` recall (0.657 → 0.892) while collapsing precision (0.870 → 0.603); on
+  `1st_test` it predicts `Normal` for zero of 1,906 truly-`Normal` rows. Don't read that
+  0.892 as an improvement.
+- **Raw `rms` was kept**: #72 conditioned dropping it on it not earning its place
+  elsewhere, and it does (macro-F1 0.945 → 0.747 on `3rd_test` without it).
+  `prior_correction` (#21 §6's "arm to beat") was **not** re-tested — it shifts decisions
+  further toward rare classes, which compounds the over-alarming above rather than
+  isolating it. Still open.
+
+Remaining for M3: MLflow tracking (`docs/PRD.md` §10 requires at least one visible run;
+#72's own acceptance criteria did not include it, so it was deliberately left out of that
+PR) and a servable model artifact — #72 deliberately persists none, since LOEO trains three
+models per configuration and there is no single "the model" to save.
 
 ## When in doubt
 
