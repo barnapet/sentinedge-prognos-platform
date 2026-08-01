@@ -81,6 +81,26 @@ giving **1.93x / 2.87x / 3.05x** for `1st_test` / `2nd_test` / `3rd_test` — th
 derived values spanning only 1.58x, from inputs spanning 2.49x. Recorded fallback for M4 serving
 (where a bearing's eventual peak is unknowable): the geometric mean, **~2.6x baseline**.
 
+> **How this threshold is derived — retrospective, not causal (added in Issue #61).**
+> `peak_ratio_rolling` is the highest rolling RMS ratio the bearing *actually reached*, which is
+> only knowable once its run is over. The threshold that classifies a file early in the run is
+> therefore set using information from the end of that same run: this is a **look-ahead
+> derivation, not a causal/online one**. For a bearing still in operation there is no peak yet, so
+> the formula above cannot be evaluated at serving time at all.
+>
+> That is precisely why the ~2.6x figure exists, and what it is: the geometric mean *across* the
+> three retrospectively derived values, standing in for the per-experiment value a live bearing
+> cannot supply. It is M4's fallback, not a fourth derived threshold.
+>
+> **This is a deliberate choice, not an oversight.** This section's job is to produce **offline
+> ground-truth labels** for supervised training, and for that purpose using a completed run in full
+> is both legitimate and standard — the labels describe what did happen to a bearing whose life is
+> already over. The look-ahead would only be a defect if these thresholds were themselves the
+> predictor, which they are not: M3 trains a classifier on features, and the labels are its target.
+> What the look-ahead does constrain is the **serving** design, which is where the fallback question
+> actually lands — stated here so a reader is told it rather than left to infer it from the
+> parenthetical above.
+
 **Rig-shutdown override:** after a Critical file, a raw-RMS collapse below 20% of the preceding
 Critical window's own RMS forces `Critical` regardless of the raw threshold result. Verified
 against the data (not assumed) to be needed only for `2nd_test` (files 982-983) and `3rd_test`
