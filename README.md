@@ -41,10 +41,12 @@ pip install -r requirements.txt
 
 ### Getting the raw dataset
 
-The raw NASA IMS bearing dataset (~1.1 GB) is not committed to the repo — it's gitignored
-under `data/raw/`. See `data/README.md` for the download source and step-by-step extraction
-instructions (the archive is nested 7z + RAR, with a couple of undocumented-upstream quirks
-that `data/README.md` covers).
+The raw NASA IMS bearing dataset is not committed to the repo — it's gitignored under
+`data/raw/`. Budget roughly **1.1 GB to download** (the compressed archive) and **~6.2 GB on
+disk** once extracted (9,464 snapshot files across the three experiments). See
+`data/README.md` for the download source and step-by-step extraction instructions (the archive
+is nested 7z + RAR, with a couple of undocumented-upstream quirks that `data/README.md`
+covers).
 
 ### Running the notebooks
 
@@ -53,8 +55,10 @@ jupyter notebook notebooks/
 ```
 
 Run in order: `01_vibration_signal_evolution.ipynb` → `02_health_state_labeling.ipynb` →
-`03_feature_candidate_screening.ipynb`. Each depends on outputs cached by the previous one
-under `data/processed/`.
+`03_feature_candidate_screening.ipynb` → `04_feature_pipeline_validation.ipynb`. The first
+three (M1-EDA) each depend on outputs cached by the previous one under `data/processed/`; the
+fourth (M2) validates the `src/features/` pipeline against those M1 findings and builds its own
+parquet outputs by calling `src/features/build_dataset.py` directly.
 
 ### Running the tests
 
@@ -78,10 +82,19 @@ check — see `.github/workflows/notebook-ci.yml`.
 ├── docs/
 │   ├── PRD.md              product requirements: goals, non-goals, architecture, milestones
 │   ├── eda_findings.md      EDA results and feature-extraction candidates from M1
-│   └── CONTRIBUTING.md      commit conventions, branch/PR workflow
-├── notebooks/               exploratory analysis and labeling logic (M1-EDA)
+│   ├── CONTRIBUTING.md      commit conventions, branch/PR workflow
+│   └── *_decision.md        M2 decision notes: windowing (#40), label hysteresis (#20),
+│                            feature extraction + versioning (#41), skewness/crest factor
+│                            (#23), frequency domain (#22)
+├── notebooks/               exploratory analysis (M1-EDA) + pipeline validation (M2)
 ├── src/                     extracted, testable modules imported by the notebooks
-│   └── labeling.py          health-state labeling logic (assign_labels)
+│   ├── labeling.py          health-state labeling logic (assign_labels)
+│   └── features/            M2 feature pipeline
+│       ├── extraction.py        RMS / kurtosis / skewness per snapshot
+│       ├── versioning.py        code + raw-data hashing, parquet manifests
+│       ├── build_dataset.py     CLI: build all three experiments' parquet + manifest
+│       └── candidate_features.py  evaluated-but-unused features (crest factor, BPFO/BPFI,
+│                                  spectral kurtosis) — kept, tested, not in the output
 ├── tests/                   pytest unit tests for src/
 └── .github/workflows/       CI: notebook execution + unit tests on every PR
 ```
@@ -95,3 +108,6 @@ check — see `.github/workflows/notebook-ci.yml`.
   milestones.
 - **`docs/CONTRIBUTING.md`** — commit message conventions and the branch/PR workflow used
   throughout this repo.
+- **`docs/*_decision.md`** — the M2 decision notes: why features are windowed the way they
+  are, why label transitions use hysteresis, how feature outputs are versioned, and which
+  candidate features were evaluated and dropped (with the evidence behind each drop).
