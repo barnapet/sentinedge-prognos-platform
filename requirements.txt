@@ -17,3 +17,23 @@ scikit-learn==1.9.0
 jupyter==1.1.1
 pytest==9.1.1
 pyarrow==25.0.0
+# Added in M3 (Issue #74): experiment tracking for the LOEO runs (docs/PRD.md Section
+# 10/11 requirement). `mlflow-skinny` rather than the full `mlflow` package -- the full
+# package pins `pandas<3`, which conflicts with this project's pinned `pandas==3.0.5`
+# (Issue #27) and silently downgrades it on install (verified: `pip install mlflow` pulls
+# pandas 2.3.3). `mlflow-skinny` is the tracking client with none of the modules that
+# impose that pin (autologging integrations, `mlflow.evaluate`) and is all Issue #74 needs:
+# `start_run`/`log_param`/`log_metric`/`log_dict`/`search_runs`. `sqlalchemy` and `alembic`
+# are added alongside it so the tracking store can be `sqlite:///mlflow.db` instead of the
+# plain `file:./mlruns` backend -- MLflow 3.x's file store is in maintenance mode and
+# refuses writes without an escape-hatch env var, while SQLite is still a single local
+# file (`docs/PRD.md` Section 8's "local/file-backed is fine for MVP"), needs no server,
+# and neither of these libraries has any pandas/numpy constraint, so this combination
+# does not reopen the pin conflict it was chosen to avoid. Trade-off accepted: the
+# graphical `mlflow ui` additionally needs `Flask`/`gunicorn` (not included in
+# `mlflow-skinny`); not added as a project dependency since `mlflow.search_runs()` already
+# satisfies `docs/PRD.md` Section 10's "visible and inspectable" criterion without a
+# server -- see `docs/mlflow_tracking.md`.
+mlflow-skinny==3.15.0
+sqlalchemy==2.0.51
+alembic==1.18.5
