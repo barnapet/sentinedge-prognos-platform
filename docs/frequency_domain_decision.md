@@ -249,3 +249,60 @@ formulation. Concretely worth trying, in rough order of expected payoff:
 Not opened as issues now: M2's remaining scope is the feature pipeline itself, and M3 has enough
 signal from the retained time-domain set to proceed. Recorded here so the next person starts from
 the sweep and the physics check rather than from scratch.
+
+## 8. Addendum (Issue #59): dominant-frequency shift — not evaluated, and why
+
+`docs/eda_findings.md` Section 4's frequency-domain row named **three** M2 candidates: spectral
+kurtosis, BPFI/BPFO-aligned energy, and **dominant-frequency shift** — tracking the location of
+the dominant FFT peak (near BPFO/BPFI) across the bearing's life and asking whether it moves as
+wear progresses. Sections 1-7 above evaluated the first two exhaustively. The third was never
+carried into Issue #22 at all: it is absent from the feature table, the results, and the follow-up
+list. That omission was not deliberate at the time, and the row's "Investigated in Issue #22 — not
+adopted" verdict silently covered it anyway.
+
+Issue #59 resolved this by examining the candidate on its merits rather than by running it. **It
+is not evaluated, and should not be, on this dataset** — not because it would be expensive, but
+because the measurement would not be interpretable. Three reasons, in increasing order of how
+decisive they are:
+
+**8a. The defect frequencies are kinematically pinned, so there is little to shift.** BPFO and
+BPFI are fixed by geometry × shaft speed (Section 2), and this rig holds 2000 RPM constant across
+the entire dataset. At constant speed the only wear-related mechanism that moves them is a change
+in contact angle, entering through `cos θ`. Substituting into `compute_bearing_frequencies()`, a
+contact-angle change far larger than bearing wear produces — 15.17° → 25° — moves BPFO by
+**1.85 Hz (1.9 FFT bins)**. A more realistic 15.17° → 20° moves it **0.80 Hz (0.8 bins)**. The
+effect being hunted is at or below the measurement's own resolution.
+
+**8b. The confound is larger than the signal, and this dataset cannot remove it.** The rig is
+belt-driven, so shaft speed wanders around its nominal 2000 RPM — the reason
+`DEFECT_BAND_HALFWIDTH_HZ = 3.0` exists in the first place. A **1% speed wander moves BPFO by
+2.36 Hz (2.4 bins)** and BPFI by 2.97 Hz (3.0 bins) — *larger than the extreme-wear shift in 8a*.
+Separating the two requires a speed reference, and this dataset has none: every channel is an
+accelerometer (`1st_test` 8 = 2 per bearing × 4 bearings; `2nd_test`/`3rd_test` 4 = 1 per bearing
+× 4), with no tachometer or key-phasor channel to order-track against. So any drift the feature
+reported could not be attributed to wear rather than to the belt. This is the decisive objection:
+the feature would be *uninterpretable*, not merely weak.
+
+**8c. The search band is too coarse to quantise a shift.** At 0.977 Hz bin width, the ±3 Hz
+defect band spans only about 6-7 bins (the figure `DEFECT_BAND_HALFWIDTH_HZ`'s own comment cites),
+so an in-band peak location can take roughly half a dozen distinct values — a coarser scale than
+the effects in 8a, and it is undefined in early life, where the defect tone
+has not yet risen out of the noise floor. That is exactly the region a baseline would have to be
+established in.
+
+**Cost is explicitly not the reason** (same framing as 6e). `compute_amplitude_spectrum()` already
+exists; adding an in-band `argmax` and running it over all 9,464 files would cost roughly what
+Section 4's plain-FFT pass did — a couple of minutes. It is skipped because the number it produced
+would not answer the question, not because producing it is hard.
+
+**What *is* worth pursuing is already recorded above.** The physically real version of "the
+spectrum's dominant content moves as the defect grows" is not a shift of the defect *line* — it is
+migration of the **resonance band** the impacts excite, as a spall widens and changes the impulse
+shape. That is Section 7's follow-up item 1 (kurtogram-based adaptive band selection), already
+recorded as the highest-expected-payoff direction. Dominant-frequency shift is therefore not a
+missing fourth idea; it is a less well-posed statement of one already on the list.
+
+**What would reopen this:** a dataset with a tachometer or key-phasor channel (enabling order
+tracking, which normalises speed wander out and would make 8b disappear), or a variable-speed rig
+where the frequencies genuinely move and order tracking is mandatory anyway. Neither describes
+NASA IMS.
