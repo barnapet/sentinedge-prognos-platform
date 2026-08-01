@@ -100,6 +100,11 @@ derived values spanning only 1.58x, from inputs spanning 2.49x. Recorded fallbac
 > What the look-ahead does constrain is the **serving** design, which is where the fallback question
 > actually lands — stated here so a reader is told it rather than left to infer it from the
 > parenthetical above.
+>
+> **Sensitivity (Issue #63).** These three values depend on a single extreme observation each — the
+> peak rolling ratio. `docs/uncertainty_quantification.md` §5 quantifies that dependence: they move
+> by 9-16% if the peak is taken from the 10th-largest file instead of the largest, but at most 1.6%
+> of files change label as a result. Value-sensitive, label-robust.
 
 **Rig-shutdown override:** after a Critical file, a raw-RMS collapse below 20% of the preceding
 Critical window's own RMS forces `Critical` regardless of the raw threshold result. Verified
@@ -158,6 +163,13 @@ list. Full derivation and correlation tables: `03_feature_candidate_screening.ip
 > given in parentheses so the two documents reconcile. Sources:
 > `docs/label_hysteresis_decision.md` (the fix) and
 > `notebooks/04_feature_pipeline_validation.ipynb` (the recomputation).
+
+> **Uncertainty (Issue #63).** The separability statistics behind this table, and the
+> frequency-domain figures in the last two rows, are point estimates on samples that get small at
+> the `Critical` end (17 / 23 / 67 files). `docs/uncertainty_quantification.md` adds
+> multiple-comparison correction and bootstrap intervals without changing any figure here: all 39
+> per-experiment ANOVA tests survive Holm correction, and one #22 ratio turns out to need a caveat
+> (see that document's §4).
 
 | Feature | Status | Evidence |
 |---|---|---|

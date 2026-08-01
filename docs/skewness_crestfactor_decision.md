@@ -93,6 +93,15 @@ discriminative (`1st_test`, 0.88).
 | `2nd_test` | 1151.0 | 322.3 | 218.0 | **488.4** | 17.2 |
 | `3rd_test` | 18826.3 | 807.9 | 1036.9 | **1811.0** | 84.9 |
 
+> **Multiple-comparison correction (Issue #63).** These 15 tests are part of a 39-test family
+> (13 features × 3 experiments) reported across this document and
+> `docs/frequency_domain_decision.md`, originally without correction. All 39 survive Holm
+> correction at α = 0.05 — the weakest test in this table, `2nd_test`'s `crest_factor`
+> (F = 17.2), has a Holm-adjusted p of 2.2 × 10⁻⁷. No figure above changes. See
+> `docs/uncertainty_quantification.md` §3, which also notes that significance was never the
+> binding constraint here: crest factor was dropped while statistically significant, on the
+> effect-size and redundancy grounds argued below.
+
 Two findings drive the decision:
 
 **Smoothing roughly doubles (or more) skewness's separability in every experiment**
