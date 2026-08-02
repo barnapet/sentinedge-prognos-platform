@@ -116,6 +116,15 @@ def test_window_mean_matches_a_full_pandas_rolling_window():
     assert window_mean(values) == pytest.approx(pd.Series(values).mean())
 
 
+def test_window_mean_is_exactly_rounded_not_the_builtin_sum():
+    """Regression test for a real CI failure on this issue's PR: the builtin `sum()` uses
+    Neumaier compensated summation for floats on CPython 3.12+ and naive summation before
+    it, so these 50 identical values average to 0.08 on 3.12 and 0.08000000000000003 on
+    3.11. A serving process must not produce version-dependent features from
+    version-independent inputs -- `math.fsum` is exactly rounded on every version."""
+    assert window_mean([0.08] * BASELINE_N_FILES) == 0.08
+
+
 def test_window_mean_of_a_single_value_is_that_value():
     """File 0's "rolling mean" is just its own RMS -- `min_periods=1`'s behaviour, and
     what makes file 0's `rms_ratio` exactly 1.0 (docs/feature_windowing_decision.md §3)."""
@@ -166,7 +175,12 @@ def test_baseline_locks_on_the_50th_file_not_the_49th_or_51st():
 
     state.observe(rms=rms_values[BASELINE_N_FILES - 1], skewness=0.0)
     assert state.file_count == BASELINE_N_FILES
-    assert state.baseline_rms == pd.Series(rms_values).head(BASELINE_N_FILES).mean()
+    # Compared within MAX_ULP, not with `==`: this averages the same 50 values pandas does,
+    # but not through pandas' accumulator (see `window_mean`). What must be exact is *which*
+    # 50 values -- an off-by-one would move this by ~0.001, four orders of magnitude out.
+    expected = pd.Series(rms_values).head(BASELINE_N_FILES).mean()
+    assert max_ulp_diff([state.baseline_rms], [expected]) <= MAX_ULP
+    assert state.baseline_rms != pd.Series(rms_values).head(BASELINE_N_FILES + 1).mean()
 
 
 def test_baseline_is_frozen_once_locked_even_against_extreme_later_files():
@@ -180,7 +194,8 @@ def test_baseline_is_frozen_once_locked_even_against_extreme_later_files():
     for _ in range(200):
         state.observe(rms=5.0, skewness=1.0)
 
-    assert state.baseline_rms == locked == 0.08
+    assert state.baseline_rms == locked  # exact: the stored scalar must not be recomputed
+    assert locked == pytest.approx(0.08)
     assert state.effective_baseline_rms == locked
 
 

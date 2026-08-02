@@ -171,7 +171,10 @@ LOEO trains three models per configuration and there is no single "the model" to
   earlier row's arithmetic, not just the window. Measured over all 9,464 real files:
   `rms`/`kurtosis`/`skewness`/`skewness_smoothed` bit-identical, `rms_ratio` bit-identical
   on 80.5–81.4% of post-warmup rows and ≤2 ULP on the rest; replicating the `pandas`
-  internal was considered and rejected. And the 50th file (index 49) answers
+  internal was considered and rejected. `window_mean` uses **`math.fsum`, not the builtin
+  `sum`** — CPython 3.12 switched `sum()` to Neumaier compensated summation for floats, so
+  the builtin gives different last bits on 3.11 (CI) than on 3.12 (dev); caught by CI on
+  #83, and pinned by a named regression test. And the 50th file (index 49) answers
   **`"stable"`**, not `"warming_up"` — a
   label-only choice, since its expanding baseline already equals the locked one.
 

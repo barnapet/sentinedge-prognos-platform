@@ -42,6 +42,7 @@ because they follow from *this* module's design rather than from that one's:
 """
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator
@@ -57,14 +58,21 @@ STABLE = "stable"
 def window_mean(values: Iterable[float]) -> float:
     """Mean of the values currently in a rolling window (or of the accumulating baseline).
 
-    Deliberately a plain left-to-right `sum(...) / n`, which is what `pandas`' own rolling
-    mean accumulates in as well. It is *not* bit-for-bit identical to
-    `Series.rolling(10, min_periods=1).mean()`, and cannot be made so without
-    reimplementing a `pandas` internal: `pandas` carries one Kahan-compensated running sum
-    across the whole column, adding the incoming value and removing the outgoing one, so
-    its result at row `i` depends on the arithmetic history of every earlier row -- not
-    just on the ten values currently in the window. Any window-local computation therefore
-    differs from it in the last bit or two.
+    `math.fsum` rather than the builtin `sum`, for a reason that is not stylistic: **the
+    builtin's floating-point result depends on the Python version.** CPython 3.12 changed
+    `sum()` to use Neumaier compensated summation for floats, so the same 50 RMS values
+    average to `0.08` on 3.12 and `0.08000000000000003` on 3.11 -- a serving process would
+    then produce version-dependent features from version-independent inputs. CI caught this
+    on the Issue #82 PR: the same tests passed on 3.12 and failed on 3.11. `math.fsum` is
+    exactly rounded on every version and platform, which makes this function's output a
+    property of the input alone.
+
+    It is still *not* bit-for-bit identical to `Series.rolling(10, min_periods=1).mean()`,
+    and cannot be made so without reimplementing a `pandas` internal: `pandas` carries one
+    Kahan-compensated running sum across the whole column, adding the incoming value and
+    removing the outgoing one, so its result at row `i` depends on the arithmetic history of
+    every earlier row -- not just on the ten values currently in the window. Any
+    window-local computation therefore differs from it in the last bit or two.
 
     Measured, not assumed: replaying all three experiments' raw files one at a time
     (9,464 files) through this module reproduces the batch pipeline's `skewness_smoothed`
@@ -77,7 +85,7 @@ def window_mean(values: Iterable[float]) -> float:
     three-class decision boundary can resolve.
     """
     values = list(values)
-    return sum(values) / len(values)
+    return math.fsum(values) / len(values)
 
 
 @dataclass
