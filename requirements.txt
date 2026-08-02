@@ -37,3 +37,12 @@ pyarrow==25.0.0
 mlflow-skinny==3.15.0
 sqlalchemy==2.0.51
 alembic==1.18.5
+# Added in M4 (Issue #84): the /predict API layer. FastAPI per docs/PRD.md Section 8/9's
+# proposed architecture ("Serving: FastAPI service in a container"). `uvicorn` (plain, not
+# the `[standard]` extra -- this app has no websocket/reload need in its documented run
+# path, src/serving/main.py) is its ASGI server. `httpx` is not imported by any serving
+# code; it is FastAPI's TestClient's transport, needed only for tests/test_api.py's
+# integration tests to make real HTTP requests against the app in-process.
+fastapi==0.141.1
+uvicorn==0.52.1
+httpx==0.28.1
