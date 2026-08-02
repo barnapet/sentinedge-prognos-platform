@@ -172,9 +172,18 @@ Recomputing `sqrt(1.3 × k-th largest rolling ratio)`:
 
 | Experiment | k=1 (published) | k=2 | k=3 | k=5 | k=10 | Spread | Files changing label (k=2…10) |
 |---|---|---|---|---|---|---|---|
-| `1st_test` | **1.931** | 1.849 | 1.790 | 1.650 | 1.630 | 15.6% | 4 → 12 of 2,156 (≤ 0.56%) |
-| `2nd_test` | **2.867** | 2.851 | 2.819 | 2.699 | 2.444 | 14.8% | 0 → 16 of 984 (≤ 1.63%) |
+| `1st_test` | **1.932** | 1.849 | 1.790 | 1.650 | 1.630 | 15.6% | 4 → 12 of 2,156 (≤ 0.56%) |
+| `2nd_test` | **2.866** | 2.851 | 2.819 | 2.699 | 2.444 | 14.8% | 0 → 16 of 984 (≤ 1.63%) |
 | `3rd_test` | **3.049** | 2.944 | 2.919 | 2.891 | 2.766 | 9.3% | 2 → 6 of 6,324 (≤ 0.09%) |
+
+`k=1`'s values are corrected here (from `1.931`/`2.867`, unchanged for `3rd_test`'s `3.049`) to
+match `src.labeling.derive_critical_multiple`'s canonical, rounding-contract output (`docs/eda_findings.md`
+§3, `src/labeling.py`'s docstring, Issue #65) rather than the unrounded-peak-ratio figure that
+docstring names as the value an implementation skipping that rounding would produce (`1.931235` /
+`2.867072` / `3.049334`, which rounds to what this table originally carried).
+This corrects only the `k=1` citation; the `k=2…10` sensitivity columns, `Spread`, and
+label-churn figures are unaffected — they characterise the sweep, not this one already-published
+value.
 
 Two things follow.
 
@@ -194,7 +203,7 @@ a knife edge.
 The value sensitivity is nonetheless real, and it compounds with the look-ahead property documented
 in `docs/eda_findings.md` §3 — a threshold derived from one extreme observation of a completed run.
 Neither is a defect for offline ground-truth labelling; both are constraints on how much weight the
-specific numbers 1.931 / 2.867 / 3.049 should carry outside that role.
+specific numbers 1.932 / 2.866 / 3.049 should carry outside that role.
 
 ## 6. What this note does and does not change
 

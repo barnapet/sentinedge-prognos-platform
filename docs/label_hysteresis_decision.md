@@ -5,7 +5,7 @@
 `docs/eda_findings.md` Section 5 flagged that `1st_test` reverts to `Normal` 73 times after
 degradation has already begun. Reproduced directly against `src/labeling.py`'s actual output
 (cached `rms_ratio` from `01_vibration_signal_evolution.ipynb`/`02_health_state_labeling.ipynb`,
-`ONSET_MULTIPLE=1.3`, `critical_multiple=1.931`):
+`ONSET_MULTIPLE=1.3`, `critical_multiple=1.932`):
 
 | Experiment | Flapping window (file index) | Files affected | `rms_ratio` range in window | Transitions | Reverts to `Normal` |
 |---|---|---|---|---|---|
