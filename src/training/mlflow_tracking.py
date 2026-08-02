@@ -57,8 +57,13 @@ def configure_tracking() -> None:
     mlflow.set_tracking_uri(TRACKING_URI)
 
 
-def _ensure_experiment(name: str) -> str:
-    """Get or create an experiment, with its artifacts under `mlartifacts/`."""
+def ensure_experiment(name: str) -> str:
+    """Get or create an experiment, with its artifacts under `mlartifacts/`.
+
+    Public rather than private since Issue #80 (`serving_model_tracking.py`) reuses it, so
+    that the M4 serving run lands in the same local store, with the same artifact root, as
+    these two M3 experiments.
+    """
     experiment = mlflow.get_experiment_by_name(name)
     if experiment is not None:
         return experiment.experiment_id
@@ -108,7 +113,7 @@ def log_imbalance_comparison(results: dict | None = None) -> dict[str, str]:
     point it at an isolated store without its own default silently overriding them.
     """
     results = compare_imbalance.run_comparison() if results is None else results
-    experiment_id = _ensure_experiment(EXPERIMENT_IMBALANCE)
+    experiment_id = ensure_experiment(EXPERIMENT_IMBALANCE)
 
     run_ids = {}
     for strategy_name, result in results.items():
@@ -147,7 +152,7 @@ def log_baseline_ablation(
     if results is None:
         feature_sets = {name: train_baseline.FEATURE_SETS[name] for name in configs}
         results = train_baseline.run_all_feature_sets(feature_sets=feature_sets)
-    experiment_id = _ensure_experiment(EXPERIMENT_ABLATION)
+    experiment_id = ensure_experiment(EXPERIMENT_ABLATION)
 
     run_ids = {}
     for config_name, result in results.items():

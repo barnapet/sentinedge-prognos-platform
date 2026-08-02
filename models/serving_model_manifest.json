@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-08-02T13:43:54.152269+00:00",
+  "serving_code_hash": "ee446f55eae5050189c89b5a1ca7288b544bed960e9ad95569ce0abe40fff70a",
+  "training_dataset_version": "2ad5399556e4c404e3f58971b887e3538991f30707227609ed46a801e9dc6af8",
+  "combined_hash": "947d2a5ae2ebbd939a4d83164ead578e016ceb9b00c051b78b8d1a6da348db52",
+  "model_sha256": "3b4a3cd275fb9a2e43d839b31e6532a0e3790cb925eb87840b345149b351d11c",
+  "trained_on": [
+    "1st_test",
+    "2nd_test",
+    "3rd_test"
+  ],
+  "split": "pooled_all_experiments_no_holdout",
+  "feature_columns": [
+    "rms",
+    "rms_ratio",
+    "kurtosis",
+    "skewness",
+    "skewness_smoothed"
+  ],
+  "labels": [
+    "Normal",
+    "Degrading",
+    "Critical"
+  ],
+  "class_weight": "balanced",
+  "model_params": {
+    "max_iter": 2000,
+    "random_state": 0
+  },
+  "pipeline_steps": [
+    "scaler",
+    "clf"
+  ],
+  "n_training_rows": 9464,
+  "n_rows_per_experiment": {
+    "3rd_test": 6324,
+    "1st_test": 2156,
+    "2nd_test": 984
+  },
+  "class_support": {
+    "Normal": 8715,
+    "Degrading": 642,
+    "Critical": 107
+  },
+  "library_versions": {
+    "python": "3.12.3",
+    "scikit-learn": "1.9.0",
+    "numpy": "2.4.6",
+    "joblib": "1.5.3"
+  }
+}

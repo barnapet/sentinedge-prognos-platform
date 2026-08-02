@@ -41,6 +41,13 @@ mlflow.db
 *.onnx
 models/*
 !models/.gitkeep
+# Deliberate exception (Issue #80): the pooled M4 serving model. The rule above exists to
+# keep *large* binaries out; this artifact is ~1.7 KB, is byte-for-byte reproducible from
+# a fixed seed (so it is auditable, not opaque — its SHA-256 is in the manifest beside it),
+# and is the one artifact the serving container needs at startup that cannot be
+# regenerated without the 6.2 GB raw dataset. Reasoning: docs/serving_model_artifact.md.
+!models/serving_model.joblib
+!models/serving_model_manifest.json
 
 # --- Docker ---
 *.log

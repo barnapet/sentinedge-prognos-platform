@@ -208,6 +208,14 @@ on its behalf.
 static, always-present disclosure of the model's known `1st_test`-shaped failure mode. The
 disclosure does not attempt to be conditional on the incoming signal.**
 
+> **Implemented in Issue #80.** `src/training/train_serving_model.py` trains exactly this
+> model and persists it to `models/serving_model.joblib` (committed, ~1.7 KB, byte-for-byte
+> reproducible), with an MLflow run in its own `m4-serving-model` experiment tagged
+> `run_purpose=serving_artifact` to keep it distinct from #21/#72's evaluation-only runs.
+> The artifact-location, gitignore, reproducibility, and provenance decisions this section
+> left to implementation are recorded in `docs/serving_model_artifact.md`. The `model_notes`
+> disclosure below remains unimplemented — it belongs to the API layer, not the artifact.
+
 ### Why pooled training, not one of the LOEO folds
 
 `docs/model_training_decision.md` §5 is explicit about why LOEO trains and discards three models
