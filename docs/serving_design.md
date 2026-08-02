@@ -85,6 +85,17 @@ mid-stream after a server restart is explicitly not supported (Section 5).
 values needed to reproduce `add_rolling_rms_ratio`/`add_rolling_skewness`'s math incrementally.
 No database, no Redis, no other persistent or distributed store.**
 
+> **Implemented in Issue #82.** `src/serving/state.py` is this dictionary
+> (`BearingStateStore`) and the per-bearing container (`BearingState`) with exactly the four
+> fields named below; `src/serving/features.py` computes one file's five features against it,
+> reusing `src/features/extraction.py`'s `compute_rms`/`compute_kurtosis`/`compute_skewness`
+> rather than restating them. The single-worker constraint below is carried as a module-level
+> docstring on the state module, since it follows from that module's design rather than from
+> the API layer's. `tests/test_serving_features.py` replays a whole experiment file-by-file
+> and checks the result against the batch pipeline's output: `rms`/`kurtosis`/`skewness`
+> bit-identical, the two rolling features equal to within 2 ULP — see the PR for Issue #82
+> for why exact bit-equality on the rolling means is not attainable against `pandas`.
+
 ### What's actually needed per bearing
 
 `src/features/extraction.py`'s two stateful features need, per `bearing_id`:
@@ -148,6 +159,14 @@ against an *expanding* baseline (the mean of whatever RMS values have been seen 
 condition with an explicit `baseline_status: "warming_up"` field. Once the 50th file is seen, the
 baseline locks to that fixed mean permanently for that bearing, and `baseline_status` switches to
 `"stable"` and never reverts.**
+
+> **Implemented in Issue #82**, in `BearingState.baseline_status` /
+> `BearingState.effective_baseline_rms`. One ambiguity this section left had to be resolved to
+> write it: "files 0–49" and "once the 50th file is seen" disagree about the 50th file (index
+> 49) itself. It is answered `"stable"`, following this section's own `file_count < 50`
+> formulation with the current file counted. The choice is label-only and changes no number —
+> on that file the expanding baseline is the mean of files 0–49, which *is* the locked
+> baseline. Reasoning in full in the PR for Issue #82.
 
 ### Why not refuse
 

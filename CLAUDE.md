@@ -162,6 +162,21 @@ LOEO trains three models per configuration and there is no single "the model" to
   it cannot drift from what #72 measured; and the pooled model's in-sample metrics
   (macro-F1 0.946) are **fit, not capability** — every logged metric is `insample_`-prefixed
   for that reason, and `docs/model_training_decision.md` §6 remains the honest number.
+- **#82** — `src/serving/state.py` (`BearingState`, `BearingStateStore`) and
+  `src/serving/features.py` (`compute_online_features`, `OnlineFeatureExtractor`) reframe
+  M2's batch feature computation as a per-request update: §2's four state fields, §3's
+  cold-start rule, no API framework. Two results not to re-derive: **exact bit-equality
+  with `pandas`' rolling mean is not attainable incrementally** — `pandas` carries one
+  Kahan-compensated running sum across the whole column, so its row `i` depends on every
+  earlier row's arithmetic, not just the window. Measured over all 9,464 real files:
+  `rms`/`kurtosis`/`skewness`/`skewness_smoothed` bit-identical, `rms_ratio` bit-identical
+  on 80.5–81.4% of post-warmup rows and ≤2 ULP on the rest; replicating the `pandas`
+  internal was considered and rejected. `window_mean` uses **`math.fsum`, not the builtin
+  `sum`** — CPython 3.12 switched `sum()` to Neumaier compensated summation for floats, so
+  the builtin gives different last bits on 3.11 (CI) than on 3.12 (dev); caught by CI on
+  #83, and pinned by a named regression test. And the 50th file (index 49) answers
+  **`"stable"`**, not `"warming_up"` — a
+  label-only choice, since its expanding baseline already equals the locked one.
 
 ## When in doubt
 
