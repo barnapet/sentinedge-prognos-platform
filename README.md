@@ -93,8 +93,12 @@ check — see `.github/workflows/notebook-ci.yml`.
 │   │                                    chain (#67)
 │   ├── uncertainty_quantification.md   intervals/corrections on M1-M2 point estimates
 │   │                                    (#63)
-│   └── mlflow_tracking.md           MLflow dependency choice + how to inspect the M3
-│                                     LOEO runs (#74)
+│   ├── mlflow_tracking.md           MLflow dependency choice + how to inspect the M3
+│   │                                 LOEO runs (#74)
+│   ├── serving_design.md            M4 /predict contract, state ownership, cold start,
+│   │                                 what "the served model" is, non-goals (#78)
+│   └── serving_model_artifact.md    where the served model lives, why it is committed,
+│                                     and its reproducibility evidence (#80)
 ├── notebooks/               exploratory analysis (M1-EDA) + pipeline validation (M2)
 ├── src/                     extracted, testable modules imported by the notebooks
 │   ├── labeling.py          health-state labeling logic (assign_labels)
@@ -112,7 +116,11 @@ check — see `.github/workflows/notebook-ci.yml`.
 │       ├── compare_imbalance.py     CLI: runs the #21 imbalance-strategy comparison
 │       ├── train_baseline.py        CLI: M3 baseline + rms_ratio ablation + diagnostics (#72)
 │       ├── candidate_scalers.py     evaluated-but-rejected scaling fixes — kept, tested
-│       └── mlflow_tracking.py       CLI: logs #21/#72's LOEO runs to MLflow (#74)
+│       ├── mlflow_tracking.py       CLI: logs #21/#72's LOEO runs to MLflow (#74)
+│       ├── train_serving_model.py   CLI: trains + persists the pooled M4 serving model (#80)
+│       └── serving_model_tracking.py  logs the #80 serving run, tagged apart from #21/#72
+├── models/                  the served model artifact + its manifest — committed, ~1.7 KB,
+│                             byte-reproducible (M4, #80; docs/serving_model_artifact.md)
 ├── tests/                   pytest unit tests for src/
 └── .github/workflows/       CI: notebook execution + unit tests on every PR
 ```

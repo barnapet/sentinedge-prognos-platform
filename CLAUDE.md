@@ -140,8 +140,28 @@ quoted as the project's number**. Three things follow that later work should not
   choosing the lighter combination. Tracking store is local SQLite (`mlflow.db`,
   gitignored, per-clone), not MLflow's plain file store, which is now in maintenance mode.
 
-Remaining for M3: a servable model artifact — #72 deliberately persists none, since LOEO
-trains three models per configuration and there is no single "the model" to save.
+M3 left one item open: a servable model artifact — #72 deliberately persists none, since
+LOEO trains three models per configuration and there is no single "the model" to save.
+
+**M4-Serving is in progress**, and it is where that item landed:
+
+- **#78** — `docs/serving_design.md`, decided before any `src/serving/` code: the
+  `/predict` contract (client sends a raw single-window signal + `bearing_id`; the
+  **server** owns rolling history, so `extraction.py`'s window/baseline logic is never
+  duplicated client-side), per-bearing in-memory state (single process, no external
+  store — which makes single-worker a hard constraint), a cold-start rule for a bearing's
+  first 50 files (expanding baseline + `baseline_status` flag, never refuse), pooled
+  training for the served model with a **static** disclosure of the known
+  `1st_test`-shaped failure mode on every response, and explicit non-goals.
+- **#80** — `src/training/train_serving_model.py` trains that pooled model on all three
+  experiments and persists it to `models/serving_model.joblib` (**committed**, ~1.7 KB,
+  byte-for-byte reproducible), plus `src/training/serving_model_tracking.py` for its
+  MLflow run. Details and the gitignore-exception reasoning:
+  `docs/serving_model_artifact.md`. Two things later work should not re-derive: the
+  configuration is **imported** from `train_baseline`/`evaluation`, never re-declared, so
+  it cannot drift from what #72 measured; and the pooled model's in-sample metrics
+  (macro-F1 0.946) are **fit, not capability** — every logged metric is `insample_`-prefixed
+  for that reason, and `docs/model_training_decision.md` §6 remains the honest number.
 
 ## When in doubt
 
