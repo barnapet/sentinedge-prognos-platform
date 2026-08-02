@@ -25,6 +25,15 @@ second defensible path, both sides are stated and one is chosen — nothing is l
 for one snapshot, plus a `bearing_id` — and the server computes every feature, stateless and
 stateful alike. The server owns 100% of feature computation; the client owns none of it.**
 
+> **Implemented in Issue #84.** `POST /predict` in `src/serving/api.py` accepts exactly
+> this payload (`PredictRequest`: `bearing_id`, `signal`, an optional display-only
+> `timestamp`), calls `src.serving.features.OnlineFeatureExtractor.observe` once per
+> request in arrival order (Issue #82), and runs the persisted pipeline (Issue #80) on the
+> result. The response is `{label, baseline_status, model_notes}` — `model_notes` always
+> Section 4's exact disclosure text, verified byte-for-byte in
+> `tests/test_api.py::test_model_notes_constant_matches_the_design_doc_byte_for_byte`
+> against this document's own Section 4 code block, so the two cannot silently drift apart.
+
 ### The two options considered
 
 | | Client sends | Server does | Risk |
@@ -151,6 +160,19 @@ otherwise be an easy mistake to make invisibly (the server would still respond i
 just with silently wrong rolling values on some fraction of requests). Multi-worker/horizontal
 scaling is a non-goal (Section 5).
 
+> **Enforced, not just documented, in Issue #84** — two independent layers, since neither
+> alone covers every way this could be violated. (1) `src/serving/main.py`, the one
+> documented run command, passes an already-built `FastAPI` object to `uvicorn.run`; passed
+> an object rather than an import string, `uvicorn` cannot fork additional workers at all
+> and exits immediately (`SystemExit(3)`) if `workers > 1` is requested, rather than
+> silently starting one. Confirmed empirically, not assumed from changelogs — see the PR
+> for Issue #84. (2) `src/serving/single_worker.py` takes an exclusive, non-blocking OS
+> file lock at app startup, independent of how the process was launched; a second process
+> — `uvicorn ... --workers N` invoked directly, a second `python -m src.serving.main`, any
+> launcher neither of the above anticipated — fails loudly at startup
+> (`SingleWorkerViolation`, process exit code 3) rather than silently serving alongside the
+> first. Both confirmed against the real process, not only in test isolation.
+
 ## 3. Cold-start behavior
 
 **Decision: never refuse to score. For files 0–49 of a new `bearing_id`, compute `rms_ratio`
@@ -233,7 +255,10 @@ disclosure does not attempt to be conditional on the incoming signal.**
 > `run_purpose=serving_artifact` to keep it distinct from #21/#72's evaluation-only runs.
 > The artifact-location, gitignore, reproducibility, and provenance decisions this section
 > left to implementation are recorded in `docs/serving_model_artifact.md`. The `model_notes`
-> disclosure below remains unimplemented — it belongs to the API layer, not the artifact.
+> disclosure below was unimplemented at that point — it belongs to the API layer, not the
+> artifact — and **is implemented in Issue #84**: `src/serving/model_notes.py` holds the
+> text below verbatim, and `src/serving/api.py` attaches it to every `/predict` response,
+> unconditionally, exactly as this section requires.
 
 ### Why pooled training, not one of the LOEO folds
 

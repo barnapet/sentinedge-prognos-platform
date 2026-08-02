@@ -177,6 +177,22 @@ LOEO trains three models per configuration and there is no single "the model" to
   #83, and pinned by a named regression test. And the 50th file (index 49) answers
   **`"stable"`**, not `"warming_up"` — a
   label-only choice, since its expanding baseline already equals the locked one.
+- **#84** — `src/serving/api.py` (FastAPI, per PRD §8/§9) implements `POST /predict` and
+  `GET /health`, wiring #82's `OnlineFeatureExtractor` and #80's persisted model together.
+  `src/serving/main.py` (`python -m src.serving.main`) is the one documented run command.
+  Three things later work should not re-derive: **the single-worker constraint is enforced
+  by two independent layers**, not a comment — `uvicorn.run` given a live `FastAPI` object
+  (not an import string) refuses outright to start more than one worker (`SystemExit(3)`,
+  confirmed empirically), and `src/serving/single_worker.py` additionally takes an
+  exclusive OS file lock at app startup that fails loudly (`SingleWorkerViolation`, process
+  exit code 3) regardless of how a second process was launched — verified against real
+  processes, not just `TestClient`. **`model_notes` is sourced from one constant**
+  (`src/serving/model_notes.py`), checked byte-for-byte against `docs/serving_design.md`
+  §4's own text by a test that re-parses that section independently, so the doc and the
+  served string cannot silently drift apart. **Measured `/predict` latency over real HTTP**
+  with a full 20,480-point signal: p50 22ms, p95 25ms, max 34ms — roughly 15x inside the
+  <500ms target (`docs/PRD.md` §7/§10), not inferred from the design doc's complexity
+  analysis.
 
 ## When in doubt
 
