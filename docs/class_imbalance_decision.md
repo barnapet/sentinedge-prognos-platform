@@ -148,13 +148,19 @@ Two consequences, both deliberately left open here:
 - **`1st_test`'s `Critical` recall is not an informative comparison signal.** It is 1–3
   rows out of 17, on a fold where the model's whole decision boundary is displaced. No
   arm's ranking should rest on it, and none in Section 5 does.
-- **This is a feature-selection problem for Step 4, not a class-imbalance problem.** No
-  weighting or resampling scheme fixes a feature whose absolute scale doesn't transfer
-  between bearings. Recorded here as a hand-off, not resolved: `docs/eda_findings.md` §2
-  already documents `1st_test`'s inner-race failure as impulsive (kurtosis-led) rather
-  than amplitude-led, which is the physical reason its RMS distribution sits where it
-  does. This is exactly the failure-mode-dependent weakness `docs/evaluation_protocol.md`
-  §5 warned must be stated rather than averaged away.
+- ~~**This is a feature-selection problem for Step 4, not a class-imbalance problem.**~~ —
+  **superseded**, Issue #72: it is *two* independent problems, not one, and only the first is
+  a feature-selection problem. `docs/model_training_decision.md` §3 decomposes them — the
+  raw-`rms` amplitude-scale mismatch diagnosed above *is* fixable by dropping the column
+  (confirmed: `Normal` recall recovers 0.074 → 0.659), but a second, independent failure is
+  not: all 17 of `1st_test`'s `Critical` rows sit below the lowest `rms_ratio` its training
+  fold ever labelled `Critical`, which is a property of how `critical_multiple` is derived
+  per experiment and is unreachable by any feature selection, scaling, or model choice. No
+  weighting or resampling scheme fixes either. `docs/eda_findings.md` §2 already documents
+  `1st_test`'s inner-race failure as impulsive (kurtosis-led) rather than amplitude-led,
+  which is the physical reason its RMS distribution sits where it does — that diagnosis was
+  correct and is what #72 built on. This remains the failure-mode-dependent weakness
+  `docs/evaluation_protocol.md` §5 warned must be stated rather than averaged away.
 
 ## 5. Decision: `class_weight='balanced'`
 
@@ -194,8 +200,15 @@ Section 3; it has the worst `Critical` precision of all five arms; and
 probability-calibration-dependent evaluation, noting that if #21 landed on a
 probability-based approach then precision-recall curves become a required *addition*.
 Adopting it would therefore also be adopting a reporting obligation and a constraint that
-Step 4's model must emit well-calibrated probabilities. Flagged as the first thing to
-re-test once the feature set is settled — not silently dropped.
+Step 4's model must emit well-calibrated probabilities. ~~Flagged as the first thing to
+re-test once the feature set is settled — not silently dropped.~~ **Superseded, Issue #72
+§7:** deliberately *not* re-tested once the feature set was settled, for a reason found only
+after the ablation ran — `docs/model_training_decision.md` §2 shows removing `rms_ratio`
+makes every arm over-alarm (predicting `Normal` for zero of 1,906 truly-`Normal` `1st_test`
+rows under the plain baseline), and `prior_correction` shifts decisions further toward rare
+classes than any other arm. Re-testing it there would compound that over-alarming rather
+than isolate `prior_correction`'s own merit, so §7 left it open rather than silently
+dropped, with the added reason to be sceptical of the §6 lead below.
 
 ## 6. Robustness check on the ranking (does *not* resolve the Step 4 ablation)
 
@@ -232,14 +245,33 @@ Section 3 is at least partly that `rms_ratio` is doing the work. If Step 4's abl
 removes it, imbalance handling matters considerably more, and `prior_correction` becomes
 the arm to beat. Recorded, not acted on.
 
+**Partially confirmed, Issue #72.** `docs/model_training_decision.md` §2 confirms `rms_ratio`
+removal does make imbalance handling matter more in the sense predicted here — but the
+mechanism turns out to be every configuration over-alarming, not the arms becoming better
+distinguished on merit (§2's own words: "the spread widens because every arm is pushed
+toward over-alarming, not because the arms become better distinguished"). `prior_correction`
+was consequently **not** re-run against the `no_rms_ratio` configuration — see the
+back-annotation on Section 5 above and `docs/model_training_decision.md` §7 — so "becomes
+the arm to beat" remains this document's own prediction, not a measured result.
+
 ## 7. What this does not settle
 
 - **The final M3 model.** The logistic-regression baseline here is a measuring instrument.
   A different model class may interact differently with class weighting, and Section 5's
   decision was chosen partly for composing well with that uncertainty.
-- **The `rms_ratio` ablation** (Issue #67 Task 3) — Section 6 is a robustness check on
-  this document's own decision, not a verdict on that question.
-- **The `1st_test` feature-scale problem** (Section 4) — diagnosed, handed to Step 4.
+- ~~**The `rms_ratio` ablation** (Issue #67 Task 3) — Section 6 is a robustness check on
+  this document's own decision, not a verdict on that question.~~ — **resolved**, Issue #72:
+  `docs/model_training_decision.md` §2 runs it as a first-class comparison. Headline finding —
+  removing `rms_ratio` raises mean `Critical` recall (0.657 → 0.892) but this is **not a
+  capability gain**: it collapses `Critical` precision (0.870 → 0.603) and, on `1st_test`,
+  predicts `Normal` for zero of 1,906 truly-`Normal` rows. `rms_ratio` was kept in the M3
+  baseline on that evidence.
+- ~~**The `1st_test` feature-scale problem** (Section 4) — diagnosed, handed to Step 4.~~ —
+  **resolved as far as it can be, Issue #72**: `docs/model_training_decision.md` §3 finds
+  `1st_test` has *two* stacked failures, not one. The scale problem handed off here is
+  fixable (dropping raw `rms` recovers `Normal` recall 0.074 → 0.659) but a second,
+  independent threshold-transfer failure is not — see the back-annotation on Section 4
+  above.
 - **Whether `Critical` precision at ~0.87 is operationally acceptable.** That is a
   cost-of-false-alarm question `docs/PRD.md` does not currently quantify, and this
   document does not invent a threshold for it.
