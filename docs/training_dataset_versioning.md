@@ -116,3 +116,10 @@ from a trained model is a Step 4 (model training + ablation) question, explicitl
 resolved, worked around, or hedged here — Issue #67 Task 3, restated in the module
 docstring. `training_dataset.parquet` carries `rms_ratio` as a plain column, computed
 and joined exactly as the upstream feature parquet produced it.
+
+**Resolved in Issue #72** (was genuinely open when written, per above). Run as the
+`no_rms_ratio` ablation against `full`: removing `rms_ratio` *raises* mean `Critical`
+recall (0.657 → 0.892) but is not a capability gain — it collapses `Critical` precision
+(0.870 → 0.603) and, on `1st_test`, predicts `Normal` for zero of 1,906 truly-`Normal`
+rows. `rms_ratio` was kept in the M3 baseline on that evidence. See
+`docs/model_training_decision.md` §2 for the full comparison and mechanism.

@@ -53,9 +53,11 @@ the comparison axis, not the harness.
 
 ## 2. The `rms_ratio` ablation (Issue #67 Task 3, Issue #72 Task 2)
 
-Run as a first-class comparison, not a footnote. Four feature-set configurations, all with
-the imbalance treatment, model family, and hyperparameters held fixed — the only thing that
-varies is which columns the model sees.
+This is the answer to the question `docs/training_dataset_versioning.md` §3 explicitly declined
+to resolve when it joined `rms_ratio` into `training_dataset.parquet` unmodified: "whether that
+circularity should exclude it from a trained model." Run as a first-class comparison, not a
+footnote. Four feature-set configurations, all with the imbalance treatment, model family, and
+hyperparameters held fixed — the only thing that varies is which columns the model sees.
 
 | Configuration | Columns |
 |---|---|
