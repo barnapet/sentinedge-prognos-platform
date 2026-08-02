@@ -83,18 +83,36 @@ check — see `.github/workflows/notebook-ci.yml`.
 │   ├── PRD.md              product requirements: goals, non-goals, architecture, milestones
 │   ├── eda_findings.md      EDA results and feature-extraction candidates from M1
 │   ├── CONTRIBUTING.md      commit conventions, branch/PR workflow
-│   └── *_decision.md        M2 decision notes: windowing (#40), label hysteresis (#20),
-│                            feature extraction + versioning (#41), skewness/crest factor
-│                            (#23), frequency domain (#22)
+│   ├── *_decision.md        M2/M3 decision notes: windowing (#40), label hysteresis (#20),
+│   │                        feature extraction + versioning (#41), skewness/crest factor
+│   │                        (#23), frequency domain (#22), class imbalance (#21), M3
+│   │                        baseline + rms_ratio ablation (#72)
+│   ├── evaluation_protocol.md       M3 LOEO split + committed metrics, fixed before
+│   │                                training (#69)
+│   ├── training_dataset_versioning.md  feature-parquet + label join, its own hash
+│   │                                    chain (#67)
+│   ├── uncertainty_quantification.md   intervals/corrections on M1-M2 point estimates
+│   │                                    (#63)
+│   └── mlflow_tracking.md           MLflow dependency choice + how to inspect the M3
+│                                     LOEO runs (#74)
 ├── notebooks/               exploratory analysis (M1-EDA) + pipeline validation (M2)
 ├── src/                     extracted, testable modules imported by the notebooks
 │   ├── labeling.py          health-state labeling logic (assign_labels)
-│   └── features/            M2 feature pipeline
-│       ├── extraction.py        RMS / kurtosis / skewness per snapshot
-│       ├── versioning.py        code + raw-data hashing, parquet manifests
-│       ├── build_dataset.py     CLI: build all three experiments' parquet + manifest
-│       └── candidate_features.py  evaluated-but-unused features (crest factor, BPFO/BPFI,
-│                                  spectral kurtosis) — kept, tested, not in the output
+│   ├── features/            M2 feature pipeline
+│   │   ├── extraction.py            RMS / kurtosis / skewness per snapshot
+│   │   ├── versioning.py            code + raw-data hashing, parquet manifests
+│   │   ├── build_dataset.py         CLI: build all three experiments' parquet + manifest
+│   │   ├── build_training_dataset.py  CLI: join feature parquets + labels into
+│   │   │                              training_dataset.parquet (M3, #67)
+│   │   └── candidate_features.py    evaluated-but-unused features (crest factor, BPFO/BPFI,
+│   │                                spectral kurtosis) — kept, tested, not in the output
+│   └── training/             M3 baseline classifier, LOEO evaluation, MLflow tracking
+│       ├── evaluation.py            LOEO folds, committed metrics, aggregation (#69)
+│       ├── imbalance.py             five class-imbalance strategies compared under LOEO (#21)
+│       ├── compare_imbalance.py     CLI: runs the #21 imbalance-strategy comparison
+│       ├── train_baseline.py        CLI: M3 baseline + rms_ratio ablation + diagnostics (#72)
+│       ├── candidate_scalers.py     evaluated-but-rejected scaling fixes — kept, tested
+│       └── mlflow_tracking.py       CLI: logs #21/#72's LOEO runs to MLflow (#74)
 ├── tests/                   pytest unit tests for src/
 └── .github/workflows/       CI: notebook execution + unit tests on every PR
 ```
@@ -108,6 +126,14 @@ check — see `.github/workflows/notebook-ci.yml`.
   milestones.
 - **`docs/CONTRIBUTING.md`** — commit message conventions and the branch/PR workflow used
   throughout this repo.
-- **`docs/*_decision.md`** — the M2 decision notes: why features are windowed the way they
+- **`docs/*_decision.md`** — the M2 decision notes (why features are windowed the way they
   are, why label transitions use hysteresis, how feature outputs are versioned, and which
-  candidate features were evaluated and dropped (with the evidence behind each drop).
+  candidate features were evaluated and dropped) plus the M3 ones: which class-imbalance
+  approach was adopted (`class_imbalance_decision.md`, #21) and the M3 baseline model with
+  its `rms_ratio` ablation and `1st_test` diagnosis (`model_training_decision.md`, #72).
+- **M3 protocol/versioning notes** — `docs/evaluation_protocol.md` fixes the leave-one-
+  experiment-out split and committed metrics *before* any model existed (#69);
+  `docs/training_dataset_versioning.md` covers how the training dataset is joined and
+  versioned (#67); `docs/uncertainty_quantification.md` adds intervals and multiple-
+  comparison correction to M1-M2's point estimates (#63); `docs/mlflow_tracking.md` covers
+  the MLflow dependency choice and how to inspect the logged LOEO runs (#74).

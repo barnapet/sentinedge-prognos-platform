@@ -33,7 +33,7 @@ whether that model is still trustworthy.
 - G1: Predict bearing health state (Normal / Degrading / Critical) from vibration signal data
   with a documented, reasonable level of accuracy. **Decided (locked, not revisited before
   Milestone 4):** classification, not RUL regression — see Section 6 for rationale. RUL
-  estimation is a stretch goal (Section 10), not part of MVP scope.
+  estimation is a stretch goal (Section 11), not part of MVP scope.
 - G2: Serve the model through a real serving layer (API/container), not a notebook.
 - G3: Monitor the deployed model — track prediction distribution / basic drift signals over
   time, not just training-time metrics.
@@ -94,7 +94,7 @@ Rationale:
   distribution of predicted classes over time is simpler to reason about than shift in a
   continuous RUL estimate).
 
-RUL regression remains a documented stretch goal (Section 10) — not committed scope, and not
+RUL regression remains a documented stretch goal (Section 11) — not committed scope, and not
 revisited before the health-state classifier is working end-to-end.
 
 ## 7. Success Metrics
