@@ -1,0 +1,24 @@
+# Runtime dependencies of the serving container only (Issue #86).
+#
+# A strict SUBSET of requirements.txt, at identical pins. requirements.txt stays the single
+# source of truth for versions; tests/test_docker_demo.py asserts every package here is
+# pinned there to exactly the same version, so the two cannot drift apart silently -- the
+# same mechanism used for the model_notes disclosure (#84) and the imported model
+# configuration (#80), rather than a comment asking the next person to remember.
+#
+# Why a subset at all: installing requirements.txt into the image would pull jupyter,
+# matplotlib, mlflow-skinny, sqlalchemy, alembic, pyarrow and pytest -- none of which the
+# request path imports -- for a substantially larger image and a slower `docker compose up`,
+# which is the exact number docs/PRD.md Section 10's "<15 min fresh clone -> running demo"
+# criterion is measured on.
+#
+# Every entry below is imported by the serving path: numpy/scipy by
+# src/features/extraction.py's feature functions, pandas and scikit-learn transitively via
+# src/training/evaluation.py and train_serving_model.py (FEATURE_MATRIX_COLUMNS and
+# load_serving_model), fastapi/uvicorn by src/serving/api.py and main.py.
+pandas==3.0.5
+numpy==2.4.6
+scipy==1.17.1
+scikit-learn==1.9.0
+fastapi==0.141.1
+uvicorn==0.52.1
