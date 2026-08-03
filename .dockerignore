@@ -1,0 +1,23 @@
+# Keep the build context small and the image reproducible (Issue #86).
+#
+# data/ matters most: the raw dataset is 6.2 GB, and without this the Docker daemon would
+# receive all of it as build context on every build -- turning a ~1 minute build into a
+# many-minute one, for files the serving path never reads.
+
+data/
+.venv/
+venv/
+notebooks/
+tests/
+mlruns/
+mlartifacts/
+mlflow.db
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.pyc
+.claude/
+docs/
+*.md
+!README.md

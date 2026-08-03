@@ -1,0 +1,91 @@
+# Builds the serving image and runs a real playback against a real container (Issue #86).
+#
+# Deliberately a separate workflow from notebook-ci.yml rather than another job in it: that
+# one restores a 1.1 GB dataset and executes every notebook, and this needs none of that.
+# The committed demo sample (demo/sample_data/, ~6 MB) is the reason this can be a fast,
+# self-contained check -- the same property that makes `docker compose up` work on a fresh
+# clone makes it work on a bare CI runner.
+#
+# Scope: that the container builds, starts single-worker, and answers a real playback
+# through the documented compose path. The prediction *quality* over a full replay is not
+# re-measured here -- that is what the test suite and the PR's reported run cover.
+
+name: Docker demo
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  compose-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the serving image
+        run: docker compose build
+
+      - name: Start the API
+        run: docker compose up -d api
+
+      - name: Wait for the container to report healthy
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' \
+              "$(docker compose ps -q api)")
+            echo "health: $status"
+            [ "$status" = "healthy" ] && exit 0
+            sleep 2
+          done
+          echo "API never became healthy" >&2
+          docker compose logs api >&2
+          exit 1
+
+      - name: Replay past the cold-start boundary and check the transition
+        run: |
+          set -euo pipefail
+          # 52 snapshots: enough to cross the 50-file baseline lock
+          # (docs/serving_design.md Section 3) and see it hold afterwards.
+          docker compose run --rm --no-deps demo \
+            python -m demo.playback --url http://api:8000 --interval 0 --limit 52 \
+            | tee playback.log
+
+          grep -q "baseline=warming_up" playback.log
+          grep -q "baseline=stable" playback.log
+          grep -q "stable from request 50 onward" playback.log
+          # The Section 4 disclosure must reach the client on a real response, not just in
+          # a unit test's assertion.
+          grep -q "LOEO evaluation found this model class does not reliably detect" playback.log
+
+      - name: Confirm the container refuses to run more than one worker
+        run: |
+          set -euo pipefail
+          # `src.serving.main:app` as an *import string* is the form uvicorn can actually
+          # fork workers from, so this is the invocation that would succeed if the
+          # constraint were not enforced -- not the app-object form main.py itself uses,
+          # which uvicorn rejects outright (Issue #84).
+          #
+          # Asserted on the log rather than the exit code, verified rather than assumed:
+          # uvicorn's parent process exits 0 even when a child fails to start and it tears
+          # everything down, so `if ! cmd` here would pass for the wrong reason and keep
+          # passing if the lock were removed.
+          docker compose run --rm --no-deps --entrypoint sh api -c \
+            'timeout 30 python -m uvicorn src.serving.main:app --workers 2 --port 8001 2>&1' \
+            > multiworker.log || true
+          cat multiworker.log
+
+          grep -q "SingleWorkerViolation" multiworker.log
+          grep -q "failed to start, stopping the parent process" multiworker.log
+          echo "second worker refused by the startup lock, as required"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans

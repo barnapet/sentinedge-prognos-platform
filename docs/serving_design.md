@@ -68,6 +68,14 @@ this specific three-experiment dataset. The client (`demo/playback.py`, out of s
 issue but the consumer this contract is designed for) selects the channel and sends that one
 array; the server never needs to know which column index a bearing's data came from.
 
+> **That client exists as of Issue #86.** `demo/playback.py` holds the `EXPERIMENTS` lookup
+> and sends one channel's raw array per request, in order from file 0 — the split this
+> section describes, unchanged. `tests/test_demo_playback.py` pins the channel choice per
+> experiment, since a wrong column would still produce a perfectly plausible-looking
+> prediction: the server has no way to notice it was handed a different bearing's vibration.
+> The demo's default source is a committed 6.0 MB signal sample rather than the raw dataset,
+> so `docker compose up` works on a fresh clone (`demo/sample.py`, `docs/PRD.md` §10).
+
 ### Payload shape (illustrative, not an API spec — no server code in this issue)
 
 ```

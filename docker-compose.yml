@@ -1,0 +1,47 @@
+# `docker compose up` -> the serving API, plus a demo playback that drives it
+# (docs/PRD.md Section 8's proposed architecture; Issue #86).
+#
+# Two services, one command. `api` serves /predict; `demo` waits for it to report healthy,
+# then replays a bearing's run-to-failure history against it and exits. A reviewer running
+# `docker compose up` sees real predictions stream past without installing a Python client
+# (docs/PRD.md Section 10's "<15 min fresh clone -> running demo").
+#
+# Scaling caveat, stated rather than left to be discovered: `single_worker.py`'s lock is an
+# OS file lock, so it is per-container -- two containers each hold their own /tmp and would
+# each believe they are alone. What actually prevents `docker compose up --scale api=2` here
+# is the fixed published port below: the second container cannot bind 8000 and fails loudly.
+# That is sufficient for this design, because multi-worker/horizontal serving is an explicit
+# non-goal (docs/serving_design.md Section 5) -- correct rolling state across replicas needs
+# the shared store that document rules out.
+
+services:
+  api:
+    build: .
+    image: sentinedge-prognos-serving
+    # Fixed host port, not a range: see the scaling caveat above.
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://localhost:8000/health'))['model_loaded'] else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  demo:
+    build: .
+    image: sentinedge-prognos-serving
+    depends_on:
+      api:
+        condition: service_healthy
+    # demo/ is deliberately not in the image (see Dockerfile) -- the playback client is not
+    # part of the served application. Mounting it read-only keeps that separation while
+    # still giving `docker compose up` a one-command demo.
+    volumes:
+      - ./demo:/app/demo:ro
+    environment:
+      PYTHONPATH: /app
+    # 0.5s rather than docs/PRD.md Section 8's ~2s: the compose path is the "does this work"
+    # demo, and 197 snapshots at 2s would be 6.6 minutes before it finished. Run
+    # `python -m demo.playback` on the host for the full-cadence version.
+    command: ["python", "-m", "demo.playback", "--url", "http://api:8000", "--interval", "0.5"]

@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-08-02T20:24:40.017278+00:00",
+  "experiment": "2nd_test",
+  "bearing": "Bearing 1, Ch 1",
+  "channel_idx": 0,
+  "failure_mode": "outer race failure",
+  "step": 5,
+  "n_files_sampled": 197,
+  "n_files_in_experiment": 984,
+  "samples_per_file": 20480,
+  "dtype": "float32",
+  "first_file": "2004.02.12.10.32.39",
+  "last_file": "2004.02.19.05.52.39",
+  "label_counts": {
+    "Normal": 131,
+    "Degrading": 62,
+    "Critical": 4
+  },
+  "sha256": "271cf598d40818e723c4a421e7df969e859c228b173b3053a09bd8a3271822d4",
+  "size_bytes": 5994231,
+  "source": "NASA IMS bearing dataset (see data/README.md)",
+  "note": "Every 5th snapshot of 2nd_test, tracked channel only. Each snapshot is the complete, unmodified 20,480-point recording as src/features/extraction.py's load_channel returns it -- only which files are present is reduced, never their contents. Labels are ground truth for display by demo/playback.py and are never sent to the server."
+}

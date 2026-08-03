@@ -143,7 +143,7 @@ quoted as the project's number**. Three things follow that later work should not
 M3 left one item open: a servable model artifact — #72 deliberately persists none, since
 LOEO trains three models per configuration and there is no single "the model" to save.
 
-**M4-Serving is in progress**, and it is where that item landed:
+**M4-Serving is complete** (#78 → #80 → #82 → #84 → #86), and it is where that item landed:
 
 - **#78** — `docs/serving_design.md`, decided before any `src/serving/` code: the
   `/predict` contract (client sends a raw single-window signal + `bearing_id`; the
@@ -193,6 +193,21 @@ LOEO trains three models per configuration and there is no single "the model" to
   with a full 20,480-point signal: p50 22ms, p95 25ms, max 34ms — roughly 15x inside the
   <500ms target (`docs/PRD.md` §7/§10), not inferred from the design doc's complexity
   analysis.
+- **#86** — `Dockerfile`/`docker-compose.yml` (`docker compose up` → API + playback),
+  `demo/playback.py`, and a committed 6.0 MB signal sample. **M4-Serving is complete.**
+  Four things later work should not re-derive. **The fresh-clone criterion is met by
+  committing signal, not by optimising the download**: `demo/sample_data/` is every 5th
+  `2nd_test` snapshot, tracked channel, each window the complete unmodified 20,480 points —
+  measured 3s clone + 53s to a healthy API on a cold cache, versus 216–269s for dataset
+  download/extract alone (this repo's own CI). **There is deliberately no `1st_test`
+  sample**: decimating it 1-in-10 makes the model predict zero `Critical`, while
+  full-resolution predicts 16/17 correctly — a committed decimated sample would stage a
+  false reproduction of the documented limitation. Relatedly, **a full `1st_test` replay
+  does *not* show the model failing**, because the pooled model fits it in-sample; the
+  0.059 disclosure is a held-out figure, and the README says so where a reviewer will hit
+  it. **`uvicorn`'s parent process exits 0 even when a worker fails to start** and it tears
+  everything down — so the CI check for the single-worker constraint asserts on the log, not
+  the exit code, which would otherwise pass for the wrong reason forever.
 
 ## When in doubt
 
