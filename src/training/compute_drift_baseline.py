@@ -26,6 +26,7 @@ Reproducing:
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +46,28 @@ TRAINING_DATASET_MANIFEST_PATH = TRAINING_DATASET_PATH.parent / "training_datase
 MONITORED_FEATURES = ["rms", "kurtosis", "skewness", "skewness_smoothed"]
 
 
+def _compensated_mean_std(values: pd.Series) -> tuple[float, float]:
+    """Mean and sample std (`ddof=1`, matching `pandas`' default) via `math.fsum`, exactly
+    rounded and independent of the numpy/pandas version computing it -- the same rationale
+    `src.serving.state.window_mean` already established for Issue #82's rolling mean: a
+    plain `.mean()`/`.std()` delegates to numpy's internal (pairwise) summation, whose
+    last-bit result is a property of the installed numpy/pandas build, not of the input
+    alone. That gap is not merely cosmetic here: these four features pool ~9,464 rows whose
+    positive and negative values largely cancel (three of them have a mean within roughly an
+    order of magnitude of zero), which is exactly the loss-of-significance regime naive or
+    pairwise summation is weakest in and compensated summation exists to fix. Issue #93
+    measured a committed-vs-recomputed drift of ~1.3e-10 on `skewness`'s pooled mean (~4.8x
+    `pytest.approx`'s default tolerance for a value that size) from this effect alone.
+    `math.fsum`'s result depends only on the input values, so a baseline recomputed on any
+    numpy/pandas version now matches the committed artifact exactly, not just approximately.
+    """
+    values = list(values)
+    n = len(values)
+    mean = math.fsum(values) / n
+    variance = math.fsum((x - mean) ** 2 for x in values) / (n - 1)
+    return mean, math.sqrt(variance)
+
+
 def compute_feature_baseline(
     df: pd.DataFrame, features: list[str] = MONITORED_FEATURES
 ) -> dict[str, dict[str, float]]:
@@ -55,10 +78,11 @@ def compute_feature_baseline(
     drift means "unlike anything training saw", not "unlike Normal" (that distinction is
     the classifier's own job, per Section 1's reasoning, not this baseline's).
     """
-    return {
-        feature: {"mean": float(df[feature].mean()), "std": float(df[feature].std())}
-        for feature in features
-    }
+    result = {}
+    for feature in features:
+        mean, std = _compensated_mean_std(df[feature])
+        result[feature] = {"mean": mean, "std": std}
+    return result
 
 
 def read_training_dataset_version(manifest_path: Path = TRAINING_DATASET_MANIFEST_PATH) -> str:
