@@ -48,6 +48,11 @@ models/*
 # regenerated without the 6.2 GB raw dataset. Reasoning: docs/serving_model_artifact.md.
 !models/serving_model.joblib
 !models/serving_model_manifest.json
+# Deliberate exception (Issue #90): the M5 drift-detection baseline -- eight floats (four
+# monitored features' pooled mean/std), directly human-diffable text, not an opaque
+# binary. Same "large binaries only" reasoning as the model artifact above; this file is
+# ~700 bytes. Reasoning: docs/monitoring_design.md Section 3.
+!models/drift_baseline.json
 
 # --- Docker ---
 *.log

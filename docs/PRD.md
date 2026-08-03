@@ -211,10 +211,18 @@ prior context:
       store (`mlflow.db`). Verify with `mlflow ui --backend-store-uri sqlite:///mlflow.db`
       or `mlflow.search_runs(...)` — see `docs/mlflow_tracking.md` for the full dependency
       rationale and an exact-match check against the already-published metrics.
-- [ ] `/metrics` endpoint is live and scraped by a local Prometheus instance; a Grafana
-      dashboard (or equivalent) shows at least one real signal (predicted-class distribution
-      or input feature stats) updating as the demo script plays back a bearing's run-to-failure
-      history.
+- [x] A live monitoring view shows at least one real signal (predicted-class distribution
+      and per-feature input-drift status) updating as the demo script plays back a bearing's
+      run-to-failure history. **Delivered as `GET /monitoring` (a static HTML/vanilla-JS
+      page, no build step) polling a new `GET /monitoring/drift` JSON endpoint (Issue #90),
+      not the originally proposed Prometheus + Grafana stack** — `docs/monitoring_design.md`
+      Section 4 documents this as a deliberate, named deviation, exercising this criterion's
+      own "(or equivalent)" wording: two additional long-running services would cost more in
+      moving parts and dependencies than this project's local-container demo scope
+      justifies. Measured: replaying the full-resolution `1st_test` experiment
+      (`docs/model_training_decision.md` Section 3a's raw-RMS scale problem) visibly flips
+      `rms`'s `drifting` flag (`z ≈ 10`) within the documented persistence window, over real
+      HTTP, in an actual browser tab.
 - [ ] README documents: the architecture, the classification-vs-RUL decision and why, what was
       deliberately left out of scope (Section 4) and why, and the demo playback timescale
       caveat (Section 8).

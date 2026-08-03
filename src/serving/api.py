@@ -1,5 +1,6 @@
 """The `/predict` API layer (Issue #84) -- FastAPI, per `docs/PRD.md` Section 8/9's
-proposed architecture ("Serving: FastAPI service in a container").
+proposed architecture ("Serving: FastAPI service in a container"). Monitoring endpoints
+added in Issue #90.
 
 This module assembles pieces that already exist and are individually tested, and adds no
 new computation of its own:
@@ -14,6 +15,9 @@ new computation of its own:
   conditional on the incoming signal, so there is no branch here that could skip it.
 - `src.serving.single_worker`, Section 2's single-process constraint (see that module's
   docstring and `src/serving/main.py` for the two independent layers enforcing it).
+- `src.serving.drift.MONITORED_FEATURES` (Issue #90), for `GET /monitoring/drift`'s
+  per-feature breakdown -- see `docs/monitoring_design.md` Section 3 for the shape and why
+  a cross-bearing read needs its own endpoint rather than a `/predict` response field.
 
 `create_app()` is a factory rather than a bare module-level `app`, so tests can point each
 app instance at its own single-worker lock path (a shared real path would make tests
@@ -28,8 +32,10 @@ from typing import Annotated, AsyncIterator
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from src.serving.drift import MONITORED_FEATURES
 from src.serving.features import OnlineFeatureExtractor
 from src.serving.model_notes import MODEL_NOTES
 from src.serving.single_worker import (
@@ -38,6 +44,11 @@ from src.serving.single_worker import (
     release_single_worker_lock,
 )
 from src.training.train_serving_model import MODEL_PATH, load_serving_model
+
+# docs/monitoring_design.md Section 4: one static HTML file, served directly by this app --
+# no template engine, no build step, no second service in docker-compose.yml.
+STATIC_DIR = Path(__file__).parent / "static"
+MONITORING_PAGE_PATH = STATIC_DIR / "monitoring.html"
 
 
 class PredictRequest(BaseModel):
@@ -54,14 +65,15 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    """`{label, baseline_status, model_notes}`, exactly the three fields the issue's
-    context section names -- nothing computed here beyond what `OnlineFeatures` and the
-    model already produce.
+    """`{label, baseline_status, model_notes}` plus `drift_status` (Issue #90) -- an
+    additive field, per `docs/monitoring_design.md` Section 3: the three original fields
+    are unchanged.
     """
 
     label: str
     baseline_status: str
     model_notes: str
+    drift_status: str
 
 
 class HealthResponse(BaseModel):
@@ -73,7 +85,8 @@ def create_app(
     model_path: Path = MODEL_PATH,
     lock_path: Path = DEFAULT_LOCK_PATH,
 ) -> FastAPI:
-    """Build one `/predict` + `/health` app, holding its own model, state store, and lock.
+    """Build one `/predict` + `/health` + monitoring app, holding its own model, state
+    store, and lock.
 
     Args:
         model_path: Which persisted pipeline to load (Issue #80's artifact by default).
@@ -96,10 +109,9 @@ def create_app(
 
     @app.get("/health", response_model=HealthResponse)
     def health(request: Request) -> HealthResponse:
-        """Minimal liveness/readiness signal -- not a monitoring endpoint (that's
-        `/metrics`, out of scope for this issue). Useful as-is for a future container
-        `HEALTHCHECK` (Issue #84's Task 4): a plain `GET /health` that 200s only once the
-        model is actually loaded and ready to score.
+        """Minimal liveness/readiness signal -- not `/monitoring/drift`. Useful as-is for
+        a future container `HEALTHCHECK` (Issue #84's Task 4): a plain `GET /health` that
+        200s only once the model is actually loaded and ready to score.
         """
         model_loaded = getattr(request.app.state, "model", None) is not None
         return HealthResponse(status="ok" if model_loaded else "starting", model_loaded=model_loaded)
@@ -115,11 +127,43 @@ def create_app(
 
         features = extractor.observe(payload.bearing_id, signal)
         label = str(model.predict([features.feature_vector()])[0])
+        extractor.record_prediction(payload.bearing_id, label)
 
         return PredictResponse(
             label=label,
             baseline_status=features.baseline_status,
             model_notes=MODEL_NOTES,
+            drift_status=features.drift_status,
         )
+
+    @app.get("/monitoring/drift")
+    def monitoring_drift(request: Request) -> dict:
+        """`docs/monitoring_design.md` Section 3's cross-bearing read: a plain view of
+        `BearingStateStore`'s current contents, for every `bearing_id` this process has
+        seen at least one request for. No computation of its own beyond what `/predict`
+        already wrote into that state -- this endpoint never advances a bearing's history.
+        """
+        extractor: OnlineFeatureExtractor = request.app.state.extractor
+        bearings = {}
+        for bearing_id in extractor.store:
+            state = extractor.store.get_or_create(bearing_id)
+            bearings[bearing_id] = {
+                "file_count": state.file_count,
+                "baseline_status": state.baseline_status,
+                "drift_status": state.drift_status,
+                "features": {
+                    feature: state.feature_drift(feature) for feature in MONITORED_FEATURES
+                },
+                "rms_ratio_latest": state.rolling_rms / state.effective_baseline_rms,
+                "predicted_class_counts": state.predicted_class_counts,
+            }
+        return {"bearings": bearings}
+
+    @app.get("/monitoring", response_class=FileResponse)
+    def monitoring_page() -> FileResponse:
+        """`docs/monitoring_design.md` Section 4's static dashboard -- one HTML file, no
+        framework, served by this same app and port so `docker compose up` needs no
+        second service."""
+        return FileResponse(MONITORING_PAGE_PATH)
 
     return app

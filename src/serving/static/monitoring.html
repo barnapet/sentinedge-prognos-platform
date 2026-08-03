@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<!--
+  SentinEdge Prognos -- live monitoring dashboard (Issue #90, docs/monitoring_design.md
+  Section 4). One static HTML file, inline CSS/JS, no framework, no build step, no
+  charting library, no external requests -- served by the same FastAPI process that
+  answers /predict, at GET /monitoring. Polls GET /monitoring/drift and renders one row
+  per tracked bearing_id.
+
+  docs/monitoring_design.md Section 2: rms_ratio is shown for context, but it never drives
+  a row's "drifting" highlighting -- only the four monitored features
+  (rms/kurtosis/skewness/skewness_smoothed) and the bearing-level drift_status do.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SentinEdge Prognos -- Monitoring</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  .subtitle { color: #94a3b8; margin: 0 0 20px; font-size: 0.9rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; }
+  th { color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.03em; }
+  tr.drifting { background: #3f1d1d; }
+  .status-drifting { color: #f87171; font-weight: 600; }
+  .status-nominal { color: #4ade80; }
+  .status-stable { color: #4ade80; }
+  .status-warming_up { color: #fbbf24; }
+  .feature-cell.drifting { color: #f87171; font-weight: 600; }
+  .empty { color: #64748b; font-style: italic; padding: 12px 0; }
+  .counts span { margin-right: 8px; }
+</style>
+</head>
+<body>
+  <h1>SentinEdge Prognos -- Monitoring</h1>
+  <p class="subtitle">
+    Polls <code>GET /monitoring/drift</code> every second. One row per bearing_id this
+    process has served at least one <code>/predict</code> request for.
+  </p>
+  <table id="bearings-table">
+    <thead>
+      <tr>
+        <th>Bearing</th>
+        <th>Files</th>
+        <th>Baseline</th>
+        <th>Drift</th>
+        <th>rms</th>
+        <th>kurtosis</th>
+        <th>skewness</th>
+        <th>skewness_smoothed</th>
+        <th>rms_ratio (latest)</th>
+        <th>Predicted classes</th>
+      </tr>
+    </thead>
+    <tbody id="bearings-body"></tbody>
+  </table>
+  <p id="empty-message" class="empty" style="display:none;">
+    No bearings tracked yet -- run <code>demo/playback.py</code> against this API.
+  </p>
+
+<script>
+  const POLL_INTERVAL_MS = 1000; // docs/monitoring_design.md Section 5: "roughly every
+                                  // second", matched to docker-compose.yml's playback cadence.
+
+  function featureCell(feature) {
+    const cls = feature.drifting ? "feature-cell drifting" : "feature-cell";
+    return `<td class="${cls}">${feature.z.toFixed(2)}</td>`;
+  }
+
+  function countsCell(counts) {
+    return Object.entries(counts)
+      .map(([label, n]) => `<span>${label}: ${n}</span>`)
+      .join("");
+  }
+
+  function renderRow(bearingId, b) {
+    const rowClass = b.drift_status === "drifting" ? "drifting" : "";
+    return `
+      <tr class="${rowClass}">
+        <td>${bearingId}</td>
+        <td>${b.file_count}</td>
+        <td class="status-${b.baseline_status}">${b.baseline_status}</td>
+        <td class="status-${b.drift_status}">${b.drift_status}</td>
+        ${featureCell(b.features.rms)}
+        ${featureCell(b.features.kurtosis)}
+        ${featureCell(b.features.skewness)}
+        ${featureCell(b.features.skewness_smoothed)}
+        <td>${b.rms_ratio_latest.toFixed(3)}</td>
+        <td class="counts">${countsCell(b.predicted_class_counts)}</td>
+      </tr>`;
+  }
+
+  async function poll() {
+    try {
+      const response = await fetch("/monitoring/drift");
+      const data = await response.json();
+      const bearingIds = Object.keys(data.bearings);
+
+      document.getElementById("empty-message").style.display = bearingIds.length ? "none" : "block";
+      document.getElementById("bearings-body").innerHTML = bearingIds
+        .sort()
+        .map((id) => renderRow(id, data.bearings[id]))
+        .join("");
+    } catch (err) {
+      // Transient fetch failures (e.g. a reload mid-request) are not worth surfacing as
+      // an error state on every row; the next poll a second later self-heals.
+      console.warn("monitoring poll failed", err);
+    }
+  }
+
+  poll();
+  setInterval(poll, POLL_INTERVAL_MS);
+</script>
+</body>
+</html>

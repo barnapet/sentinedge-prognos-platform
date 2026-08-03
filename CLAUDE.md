@@ -209,6 +209,51 @@ LOEO trains three models per configuration and there is no single "the model" to
   everything down — so the CI check for the single-worker constraint asserts on the log, not
   the exit code, which would otherwise pass for the wrong reason forever.
 
+**M5-Monitoring is complete** (#88 → #90), the second and final M5 milestone.
+
+- **#88** — `docs/monitoring_design.md` decided all six implementation points before any
+  monitoring code existed, matching the before-code discipline `docs/evaluation_protocol.md`
+  and `docs/serving_design.md` already established: a per-feature z-score against a pooled
+  training baseline (`|z| > 3`, a distribution-agnostic Chebyshev bound) with a 3-of-10-request
+  persistence rule; `rms_ratio` excluded from the drift check (already bearing-relative by
+  construction, so a population baseline for it would measure between-bearing severity, not
+  sensor drift); drift computed inline in `/predict`, extending `BearingState`, no new
+  lock/process; a new `GET /monitoring/drift` endpoint plus an additive `PredictResponse.
+  drift_status` field; and a static HTML/vanilla-JS dashboard (no Prometheus/Grafana/Streamlit)
+  — a deliberate, named deviation from `docs/PRD.md` §8/9's originally *proposed* architecture,
+  exercising §10's own "(or equivalent)" wording.
+- **#90** — implemented exactly that design. `src/training/compute_drift_baseline.py`
+  computes the baseline from the full pooled `training_dataset.parquet` (9,464 rows) and
+  commits it to `models/drift_baseline.json` (~700 bytes, same gitignore-exception treatment
+  as `models/serving_model.joblib`); `src/serving/drift.py` holds the pure z-score/threshold
+  functions; `src/serving/state.py`'s `BearingState` gained `drift_history`/
+  `latest_z_scores`/`predicted_class_counts`, updated inline in `observe_drift`/
+  `record_prediction` — no lock, no background task; `src/serving/api.py` added
+  `GET /monitoring/drift` and `GET /monitoring` (serving `src/serving/static/monitoring.html`).
+  Three things later work should not re-derive: **`rms_ratio` cannot reach the drift
+  computation even by accident** — it is never a key `observe_drift` accepts, enforced by a
+  test that a stray `rms_ratio` key raises `KeyError` rather than silently being read.
+  **A feature's persistent `drifting` flag and its latest `z` can legitimately disagree** —
+  measured on a real full-resolution `1st_test` replay, `kurtosis` read `drifting: true`
+  while its *latest* single reading was not itself extreme, because earlier impulsive spikes
+  within the rolling 10-request window were; this is the rolling-persistence design working
+  as intended, not a bug. **Docker Hub image pulls were network-blocked in the environment
+  #90 was implemented in**, so its end-to-end verification ran `python -m src.serving.main` +
+  `demo/playback.py` directly (identical application code, no container) rather than through
+  `docker compose up`; a real headless-browser screenshot of `GET /monitoring` and the exact
+  measured numbers (`baseline_status` flip at request 50, `predicted_class_counts` matching
+  the playback client's own tally, `rms`'s `z ≈ 10.02` on `1st_test`) are in the PR and
+  back-annotated into `docs/monitoring_design.md`. **That substitution had a real blind
+  spot, caught by CI and not by the direct-process verification**: `Dockerfile`'s
+  `COPY models/serving_model.joblib models/serving_model_manifest.json ./models/` line was
+  not extended for the new `models/drift_baseline.json`, so the container's app failed at
+  import time (`src/serving/drift.py` loads the baseline eagerly) — invisible when running
+  directly on a host where the file already exists at its repo-relative path, and only
+  surfaced once the `compose-demo` CI check actually built and started the container. Fixed
+  in the same PR once CI reported it. The lesson carried forward: running the application
+  directly is a real check on the *application logic*, not a substitute for actually
+  building the container when a change touches what gets `COPY`'d into it.
+
 ## When in doubt
 
 Prefer asking over assuming when a decision would affect scope, architecture, or the

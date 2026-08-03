@@ -55,9 +55,10 @@ def test_predict_returns_a_valid_response(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"label", "baseline_status", "model_notes"}
+    assert set(body) == {"label", "baseline_status", "model_notes", "drift_status"}
     assert body["label"] in LABELS
     assert body["baseline_status"] in {"warming_up", "stable"}
+    assert body["drift_status"] in {"nominal", "drifting"}
 
 
 def test_predict_accepts_the_documented_payload_shape(client):

@@ -30,6 +30,12 @@ a different order would be silently mis-scaled rather than rejected.
 
 No API framework is imported here, and none should be: this module is pure computation and
 state, testable and reusable on its own (Issue #82's scope).
+
+Issue #90 adds one more step here: once `skewness_smoothed` is available (it needs
+`state.observe()` to have already run), the four `docs/monitoring_design.md` Section 2
+monitored values are checked against the drift baseline via `state.observe_drift`, and the
+resulting `drift_status` rides along on `OnlineFeatures` next to `baseline_status` -- the
+same "bundle what state already computed" convention, not new computation of its own.
 """
 from __future__ import annotations
 
@@ -47,7 +53,8 @@ SERVING_FEATURE_COLUMNS = list(FEATURE_MATRIX_COLUMNS)
 
 @dataclass(frozen=True)
 class OnlineFeatures:
-    """One file's five model features, plus the cold-start disclosure that goes with them."""
+    """One file's five model features, plus the cold-start and drift disclosures that go
+    with them."""
 
     rms: float
     rms_ratio: float
@@ -56,6 +63,7 @@ class OnlineFeatures:
     skewness_smoothed: float
     baseline_status: str
     file_count: int
+    drift_status: str
 
     def feature_vector(self) -> list[float]:
         """The five features in `SERVING_FEATURE_COLUMNS` order, ready for `predict`."""
@@ -67,6 +75,7 @@ class OnlineFeatures:
             **{column: getattr(self, column) for column in SERVING_FEATURE_COLUMNS},
             "baseline_status": self.baseline_status,
             "file_count": self.file_count,
+            "drift_status": self.drift_status,
         }
 
 
@@ -90,15 +99,29 @@ def compute_online_features(signal: np.ndarray, state: BearingState) -> OnlineFe
     kurtosis = compute_kurtosis(signal)
 
     state.observe(rms=rms, skewness=skewness)
+    skewness_smoothed = state.rolling_skewness
+
+    # docs/monitoring_design.md Section 2's four monitored values -- `rms_ratio` is
+    # deliberately not one of them (that section's exclusion), so it is never passed here
+    # and can never reach `state.drift_status`.
+    state.observe_drift(
+        {
+            "rms": rms,
+            "kurtosis": kurtosis,
+            "skewness": skewness,
+            "skewness_smoothed": skewness_smoothed,
+        }
+    )
 
     return OnlineFeatures(
         rms=rms,
         rms_ratio=state.rolling_rms / state.effective_baseline_rms,
         kurtosis=kurtosis,
         skewness=skewness,
-        skewness_smoothed=state.rolling_skewness,
+        skewness_smoothed=skewness_smoothed,
         baseline_status=state.baseline_status,
         file_count=state.file_count,
+        drift_status=state.drift_status,
     )
 
 
@@ -118,3 +141,11 @@ class OnlineFeatureExtractor:
     def observe(self, bearing_id: str, signal: np.ndarray) -> OnlineFeatures:
         """Score-ready features for one file of `bearing_id`, advancing its history."""
         return compute_online_features(signal, self.store.get_or_create(bearing_id))
+
+    def record_prediction(self, bearing_id: str, label: str) -> None:
+        """Tally the served label against this bearing's state (Issue #90,
+        `docs/monitoring_design.md` Section 3). Separate from `observe` because the label is
+        only known after the model has run on that call's feature vector -- the API layer
+        calls this once it has one.
+        """
+        self.store.get_or_create(bearing_id).record_prediction(label)
