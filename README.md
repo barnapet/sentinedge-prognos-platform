@@ -26,6 +26,99 @@ or a future-iteration promise.
 Current milestone: see `CLAUDE.md`'s "Current milestone" section for the up-to-date status
 (kept there rather than duplicated here, so there's a single source of truth).
 
+## Architecture
+
+The as-built pipeline — what's actually in this repo, not `docs/PRD.md` Section 8's original,
+pre-Milestone-1 proposal (deviations are called out below the diagram):
+
+```mermaid
+flowchart TD
+    subgraph OFFLINE["Offline: data -> features -> labels"]
+        RAW["Raw vibration files\n(NASA IMS, 3 experiments)\ndata/raw/"]
+        EXTRACT["src/features/extraction.py\nrms, kurtosis, skewness,\nskewness_smoothed, rms_ratio"]
+        BUILDDS["build_dataset.py"]
+        FEATPARQUET["data/processed/&lt;exp&gt;_features.parquet\n+ manifest.json"]
+        LABEL["src/labeling.py\nassign_labels /\nderive_critical_multiple"]
+        BUILDTRAIN["build_training_dataset.py"]
+        TRAINDS["data/processed/\ntraining_dataset.parquet"]
+
+        RAW --> EXTRACT --> BUILDDS --> FEATPARQUET
+        FEATPARQUET --> BUILDTRAIN
+        LABEL --> BUILDTRAIN
+        BUILDTRAIN --> TRAINDS
+    end
+
+    subgraph TRAINING["Offline: two distinct training paths"]
+        LOEO["evaluation.py + imbalance.py +\ntrain_baseline.py\nLOEO evaluation only --\nhonest metrics, never deployed"]
+        MLFLOW1["mlflow_tracking.py"]
+        SERVEMODEL["train_serving_model.py\npooled fit, all 3 experiments"]
+        MLFLOW2["serving_model_tracking.py"]
+        MODELARTIFACT["models/serving_model.joblib\ncommitted, ~1.7 KB"]
+        DRIFTCALC["compute_drift_baseline.py\nper-feature mean/std"]
+        DRIFTARTIFACT["models/drift_baseline.json\ncommitted, ~700 B"]
+        MLFLOWDB[("mlflow.db\nlocal SQLite")]
+
+        TRAINDS --> LOEO --> MLFLOW1 --> MLFLOWDB
+        TRAINDS --> SERVEMODEL --> MODELARTIFACT
+        SERVEMODEL --> MLFLOW2 --> MLFLOWDB
+        TRAINDS --> DRIFTCALC --> DRIFTARTIFACT
+    end
+
+    subgraph CONTAINER["Serving container -- single process, in-memory state"]
+        API["src/serving/api.py (FastAPI)\nPOST /predict * GET /health\nGET /monitoring/drift * GET /monitoring"]
+        FEATSVC["src/serving/features.py\nOnlineFeatureExtractor.observe()"]
+        STATE["src/serving/state.py\nBearingState / BearingStateStore\nrolling window, cold-start baseline,\ndrift history -- no lock, one process"]
+        DRIFTSVC["src/serving/drift.py\nz-score vs. drift_baseline.json"]
+        SINGLEWORKER["single_worker.py\nOS file lock + app-object uvicorn"]
+        DASH["static/monitoring.html\npolls /monitoring/drift"]
+
+        MODELARTIFACT -.loaded at startup.-> API
+        DRIFTARTIFACT -.loaded at startup.-> DRIFTSVC
+        API --> FEATSVC --> STATE
+        API --> DRIFTSVC --> STATE
+        API -. enforced by .-> SINGLEWORKER
+        API --> DASH
+    end
+
+    subgraph DEMO["docker compose up -- one command"]
+        SAMPLE["demo/sample_data/\ncommitted 6.0 MB slice"]
+        PLAYBACK["demo/playback.py\nreplays snapshots in order"]
+        SAMPLE --> PLAYBACK
+    end
+
+    PLAYBACK -- "POST /predict\n{bearing_id, signal}" --> API
+    API -- "label, baseline_status,\nmodel_notes, drift_status" --> PLAYBACK
+```
+
+**Deviations from `docs/PRD.md` Section 8/9's originally *proposed* architecture** — each
+already named as a deliberate decision where it was made, gathered here for a reviewer
+reading top-down:
+
+- **Monitoring is a static HTML/vanilla-JS page (`GET /monitoring`) polling a JSON endpoint
+  (`GET /monitoring/drift`), not Prometheus + Grafana.** Section 8/9 proposed
+  `prometheus_client` + a scraped `/metrics` endpoint + Grafana; neither exists in this repo.
+  `docs/monitoring_design.md` Section 4 decided this explicitly, exercising Section 8/9/10's
+  own "(or equivalent)" hedge — two more long-running services would cost more in moving
+  parts than this project's local-container demo scope justifies.
+- **Two separate training paths, not one.** Section 8's diagram shows one
+  `[Training pipeline] -> [Model artifact]` arrow. What's actually built is two: LOEO
+  evaluation (`train_baseline.py` and friends) that trains three per-fold models purely to
+  measure honest generalization and **persists none of them**, and a separate pooled fit
+  (`train_serving_model.py`) trained on all three experiments together that produces the one
+  artifact `models/serving_model.joblib` actually served. `docs/PRD.md` §7 and
+  `docs/serving_model_artifact.md` record why these had to be different models, not a
+  simplification of the diagram.
+- **`/predict` takes a raw signal, not a pre-computed feature window.** Section 8 doesn't
+  specify this level of detail, but `docs/serving_design.md` Section 1 decided the server
+  owns all feature computation (rolling window, baseline, cold-start) so that logic can never
+  drift into a second client-side copy — the client (`demo/playback.py`) sends only a signal
+  and a `bearing_id`.
+- **MLflow's tracking store is local SQLite (`mlflow.db`), via `mlflow-skinny` +
+  `sqlalchemy` + `alembic`, not the full `mlflow` package's file store** Section 8 implied
+  ("local/file-backed is fine for MVP"). `docs/mlflow_tracking.md` found the full `mlflow`
+  package pins `pandas<3`, which would silently downgrade this project's pinned
+  `pandas==3.0.5` — the lighter combination avoids that without giving up run tracking.
+
 ## Quick start — watch a bearing fail
 
 **No dataset download, no Python environment.** Docker is the only prerequisite.
@@ -36,10 +129,14 @@ cd sentinedge-prognos-platform
 docker compose up
 ```
 
-That starts the serving API and replays a real bearing's run-to-failure history against it,
-one snapshot per request. Measured end-to-end on a cold Docker cache (base image pulled,
-every wheel downloaded): **3s to clone, 53s to a healthy API, first predictions ~2s later**
-— against `docs/PRD.md` Section 10's 15-minute budget.
+**This is genuinely one command.** `docker-compose.yml` defines two services, `api` and
+`demo`; `demo` declares `depends_on: api: condition: service_healthy`, so it waits for the
+API's own `/health`-based healthcheck before starting the playback client automatically — no
+second terminal, no manually-run client script. Re-verified for Issue #92 with the build
+cache and image removed first (a genuinely cold cache, not just a cold container):
+**~2s to clone, ~71s to a healthy API** (`docker compose up --build` timed from cold), and the
+same playback result reported below every time, since it replays the same committed sample
+against the same committed model — well inside `docs/PRD.md` Section 10's 15-minute budget.
 
 Real output from that run (abridged — 197 requests in total):
 
@@ -231,10 +328,13 @@ check — see `.github/workflows/notebook-ci.yml`.
 .
 ├── README.md              this file
 ├── CLAUDE.md               project context and conventions for AI-assisted work
+├── LICENSE                Apache 2.0
 ├── Dockerfile              serving container: single-worker by construction (M4, #86)
 ├── docker-compose.yml      `docker compose up` -> API + demo playback (M4, #86)
 ├── requirements.txt        pinned Python dependencies
 ├── requirements-serving.txt  the serving subset, same pins — what goes in the image
+├── .gitignore              data/, mlflow.db, __pycache__/, etc. — not committed
+├── .dockerignore           keeps data/ and the 6.2 GB dataset out of the build context (#86)
 ├── data/
 │   ├── README.md           dataset source, download, and extraction instructions
 │   └── raw/, processed/    gitignored — populated locally, see data/README.md
@@ -314,11 +414,14 @@ check — see `.github/workflows/notebook-ci.yml`.
   milestones.
 - **`docs/CONTRIBUTING.md`** — commit message conventions and the branch/PR workflow used
   throughout this repo.
-- **`docs/*_decision.md`** — the M2 decision notes (why features are windowed the way they
-  are, why label transitions use hysteresis, how feature outputs are versioned, and which
-  candidate features were evaluated and dropped) plus the M3 ones: which class-imbalance
-  approach was adopted (`class_imbalance_decision.md`, #21) and the M3 baseline model with
-  its `rms_ratio` ablation and `1st_test` diagnosis (`model_training_decision.md`, #72).
+- **`docs/*_decision.md`** — the M2 decision notes: `feature_windowing_decision.md` (why
+  features are windowed the way they are, #40), `label_hysteresis_decision.md` (why label
+  transitions use hysteresis, #20), `feature_extraction_versioning.md` (how feature outputs
+  are versioned, #41), `skewness_crestfactor_decision.md` and `frequency_domain_decision.md`
+  (candidate features evaluated and dropped, #23/#22) — plus the M3 ones:
+  `class_imbalance_decision.md` (which class-imbalance approach was adopted, #21) and
+  `model_training_decision.md` (the M3 baseline model, its `rms_ratio` ablation, and the
+  `1st_test` diagnosis, #72).
 - **M3 protocol/versioning notes** — `docs/evaluation_protocol.md` fixes the leave-one-
   experiment-out split and committed metrics *before* any model existed (#69);
   `docs/training_dataset_versioning.md` covers how the training dataset is joined and
