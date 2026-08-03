@@ -278,6 +278,18 @@ LOEO trains three models per configuration and there is no single "the model" to
   so this never affects the documented Quick Start), so it was filed as Issue #93 rather than
   fixed inside a docs-only milestone.
 
+**#93** — fixed. `compute_feature_baseline` (`src/training/compute_drift_baseline.py`) now
+computes mean/std via `math.fsum`-based compensated summation (a new `_compensated_mean_std`
+helper) instead of plain pandas `.mean()`/`.std()`, the same fix `window_mean` already applied
+for Issue #82's online rolling mean. `models/drift_baseline.json` was regenerated; only
+`kurtosis`/`skewness`/`skewness_smoothed` changed, and only at floating-point precision (~10th
+significant digit or beyond) — `rms`'s mean/std were bit-identical, since its baseline isn't
+near enough to zero for pandas' summation to lose precision the same way. Confirmed
+deterministic: regenerating twice in a row produces byte-identical output apart from the
+timestamp. A regression test (`test_compensated_mean_recovers_precision_pandas_mean_loses`)
+pins this with the textbook `[1e16, 1.0, -1e16]` cancellation case, verified against this
+repo's pinned `numpy`/`pandas` to actually lose the `1.0` before asserting the fix recovers it.
+
 ## When in doubt
 
 Prefer asking over assuming when a decision would affect scope, architecture, or the
