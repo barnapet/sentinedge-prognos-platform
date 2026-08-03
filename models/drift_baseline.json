@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-03T12:14:23.464979+00:00",
+  "training_dataset_version": "2ad5399556e4c404e3f58971b887e3538991f30707227609ed46a801e9dc6af8",
+  "features": [
+    "rms",
+    "kurtosis",
+    "skewness",
+    "skewness_smoothed"
+  ],
+  "n_rows": 9464,
+  "baseline": {
+    "rms": {
+      "mean": 0.0962739908993897,
+      "std": 0.04962215275719937
+    },
+    "kurtosis": {
+      "mean": 3.6375354752007523,
+      "std": 2.773792756042855
+    },
+    "skewness": {
+      "mean": -0.0004265016496274368,
+      "std": 0.1037885304524303
+    },
+    "skewness_smoothed": {
+      "mean": -2.782211878279737e-05,
+      "std": 0.055599910944014466
+    }
+  }
+}

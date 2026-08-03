@@ -14,8 +14,10 @@ This repository implements a predictive maintenance MVP:
 - Bearing health-state classification (Normal / Degrading / Critical) from vibration signal
   data — chosen over RUL regression for the MVP; see `docs/PRD.md` Section 6 for the
   rationale.
-- A served model (FastAPI) with basic monitoring (Prometheus/Grafana), built out milestone
-  by milestone per `docs/PRD.md` Section 11.
+- A served model (FastAPI) with a live monitoring dashboard, built out milestone by
+  milestone per `docs/PRD.md` Section 11. The dashboard is a single static page + JSON
+  endpoint (not Prometheus/Grafana) — a deliberate scope decision, `docs/monitoring_design.md`
+  Section 4.
 
 Kubernetes, multi-model serving, and the Machina agent layer are **not** planned for this
 MVP — they are a documented, deliberate Non-Goal (`docs/PRD.md` Section 4), not an omission
@@ -92,6 +94,52 @@ curl -X POST localhost:8000/predict -H 'Content-Type: application/json' \
 ```
 
 Stop it with `Ctrl+C`, then `docker compose down`.
+
+### Live monitoring dashboard
+
+While the API is up (from the Quick Start above, or any of the runs below), open
+**http://localhost:8000/monitoring** in a browser. It's a single static HTML page — no
+build step, no separate service — polling a new `GET /monitoring/drift` JSON endpoint once
+a second, with one row per bearing the process has served at least one `/predict` request
+for: file count, `baseline_status`, an overall `drift_status`, each of the four monitored
+features' current z-score and whether it's *persistently* drifting (at least 3 of the last
+10 requests were extreme — a single noisy reading never flips it), `rms_ratio`'s latest
+value, and the running `predicted_class_counts` tally.
+
+`rms_ratio` is shown for context but never drives `drifting`/`drift_status` — it's already
+normalized to a bearing's own first-50-file baseline, so a *second*, population-level
+normalization on top would measure between-bearing severity, not sensor drift
+(`docs/monitoring_design.md` Section 2). The other four features (`rms`, `kurtosis`,
+`skewness`, `skewness_smoothed`) are checked against a pooled training-set baseline instead,
+which is exactly what catches the `1st_test` scale problem the `model_notes` disclosure
+above is about — replaying it at full resolution measurably does this:
+
+```
+"1st_test-full": {
+  "file_count": 2156,
+  "baseline_status": "stable",
+  "drift_status": "drifting",
+  "features": {
+    "rms":               {"z": 10.02, "drifting": true},
+    "kurtosis":          {"z": 1.90,  "drifting": true},
+    "skewness":          {"z": 0.65,  "drifting": false},
+    "skewness_smoothed": {"z": -2.49, "drifting": false}
+  },
+  "rms_ratio_latest": 2.87,
+  "predicted_class_counts": {"Normal": 1834, "Degrading": 303, "Critical": 19}
+}
+```
+
+(Measured over real HTTP, replaying all 2,156 real `1st_test` files —
+`python -m demo.playback --raw-dir data/raw --experiment 1st_test --interval 0`, see below.)
+`rms`'s z-score of 10 is the same amplitude-scale mismatch
+`docs/model_training_decision.md` Section 3a diagnoses: `1st_test`'s raw RMS simply sits in a
+different range than the other two experiments', which is exactly the kind of "this doesn't
+look like anything training saw" input the drift signal exists to surface. `kurtosis`
+reads `drifting: true` even though its *latest* single reading (z=1.90) isn't itself
+extreme — impulsive spikes earlier within the last 10 requests were, and the persistence
+rule keeps the flag up until they age out of the window, not just while the current reading
+is extreme.
 
 ### Why this works without the 6.2 GB dataset
 
@@ -208,8 +256,10 @@ check — see `.github/workflows/notebook-ci.yml`.
 │   │                                 LOEO runs (#74)
 │   ├── serving_design.md            M4 /predict contract, state ownership, cold start,
 │   │                                 what "the served model" is, non-goals (#78)
-│   └── serving_model_artifact.md    where the served model lives, why it is committed,
-│                                     and its reproducibility evidence (#80)
+│   ├── serving_model_artifact.md    where the served model lives, why it is committed,
+│   │                                 and its reproducibility evidence (#80)
+│   └── monitoring_design.md         M5 drift signal, baseline, dashboard scope and the
+│                                     Prometheus/Grafana deviation (#88)
 ├── demo/                    the playback client and the committed signal sample (#86)
 │   ├── playback.py          replays a bearing against /predict; owns channel selection
 │   ├── sample.py            what the committed sample is, and why it was cut that way
@@ -235,16 +285,21 @@ check — see `.github/workflows/notebook-ci.yml`.
 │   │   ├── candidate_scalers.py     evaluated-but-rejected scaling fixes — kept, tested
 │   │   ├── mlflow_tracking.py       CLI: logs #21/#72's LOEO runs to MLflow (#74)
 │   │   ├── train_serving_model.py   CLI: trains + persists the pooled M4 serving model (#80)
-│   │   └── serving_model_tracking.py  logs the #80 serving run, tagged apart from #21/#72
-│   └── serving/              M4 serving layer
-│       ├── state.py          per-bearing rolling state, single-process by design (#82)
+│   │   ├── serving_model_tracking.py  logs the #80 serving run, tagged apart from #21/#72
+│   │   └── compute_drift_baseline.py  CLI: computes + persists the M5 drift baseline (#90)
+│   └── serving/              M4 serving layer, M5 monitoring added in #90
+│       ├── state.py          per-bearing rolling state + drift tracking (#82, #90)
 │       ├── features.py       online feature computation, batch-equivalent to #41 (#82)
-│       ├── api.py            FastAPI /predict + /health (#84)
+│       ├── drift.py          z-score/threshold constants, drift baseline loader (#90)
+│       ├── api.py            FastAPI /predict + /health + /monitoring* (#84, #90)
+│       ├── static/monitoring.html  the live dashboard page (#90)
 │       ├── single_worker.py  OS-level lock enforcing the single-worker constraint (#84)
 │       ├── model_notes.py    the Section 4 disclosure, one source of truth (#84)
 │       └── main.py           `python -m src.serving.main` — the documented run command
-├── models/                  the served model artifact + its manifest — committed, ~1.7 KB,
-│                             byte-reproducible (M4, #80; docs/serving_model_artifact.md)
+├── models/                  committed artifacts, byte-reproducible from the training
+│                             dataset — the served model + manifest (~1.7 KB, M4, #80;
+│                             docs/serving_model_artifact.md) and the drift baseline
+│                             (~700 bytes, M5, #90; docs/monitoring_design.md)
 ├── tests/                   pytest unit tests for src/
 └── .github/workflows/       CI: notebook execution + unit tests, and a container build
                               that runs a real playback against a real container (#86)
@@ -270,3 +325,6 @@ check — see `.github/workflows/notebook-ci.yml`.
   versioned (#67); `docs/uncertainty_quantification.md` adds intervals and multiple-
   comparison correction to M1-M2's point estimates (#63); `docs/mlflow_tracking.md` covers
   the MLflow dependency choice and how to inspect the logged LOEO runs (#74).
+- **`docs/monitoring_design.md`** — the M5 drift signal (z-score against a pooled training
+  baseline, why `rms_ratio` is excluded), where the computation lives, and why the
+  dashboard is a static page rather than Prometheus/Grafana (#88, implemented in #90).

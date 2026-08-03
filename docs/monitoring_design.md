@@ -51,6 +51,10 @@ incoming observation is therefore **one scalar per feature**, not a sample.
   noise into a distribution-shift signal — but that rolling window is built from the already-
   cheap per-point z-scores, not from re-deriving PSI/KS machinery under a different name.
 
+> **Implemented in Issue #90.** `src/serving/drift.py`'s `compute_z_score`/`is_extreme`
+> are exactly this — no PSI/KS-test machinery anywhere in `src/serving/`.
+> `tests/test_drift.py` pins the threshold and the zero-std guard.
+
 This is the same trade a fuller observability stack would resolve differently — PSI and
 KS-tests are the right tool when a monitoring system has a real batch-scoring or micro-batch
 ingestion path to compute a "current window" against. `docs/PRD.md` §10 explicitly frames
@@ -93,6 +97,17 @@ them. A reading outside the full pooled envelope is a stronger, more specific cl
 bearing looks unhealthy": it is "this looks unlike *anything* in training, healthy or not,"
 which is the thing a classifier fit on the training distribution has no grounds to be
 confident about, whatever label it outputs.
+
+> **Implemented in Issue #90.** `src/training/compute_drift_baseline.py` computes exactly
+> this: per-feature `(mean, std)` pooled over all 9,464 real training rows, all three
+> experiments, all three labels, committed to `models/drift_baseline.json` (mirroring
+> `models/serving_model_manifest.json`'s precedent — a small, human-diffable artifact, not
+> gitignored). Measured, not assumed: `rms` mean=0.0963/std=0.0496,
+> `kurtosis` mean=3.638/std=2.774, `skewness` mean≈0.0/std=0.104,
+> `skewness_smoothed` mean≈0.0/std=0.056 — and the `training_dataset_version` this baseline
+> was computed from matches, byte-for-byte, the hash already recorded in the committed
+> `models/serving_model_manifest.json` (Issue #80), confirming both artifacts were built
+> from the identical dataset version.
 
 ## 2. Which features to monitor — and why `rms_ratio` is treated differently
 
@@ -172,6 +187,18 @@ noisy version of it inside the drift signal only borrows its problems into a new
 the predicted-class panel next to it. It simply is not part of the boolean/z-score "is this
 input drifting" computation the other four features drive.
 
+> **Implemented in Issue #90, and confirmed against the exact case this section predicts.**
+> `MONITORED_FEATURES` (`src/serving/drift.py`) is `["rms", "kurtosis", "skewness",
+> "skewness_smoothed"]` — `rms_ratio` is never a key `BearingState.observe_drift` receives,
+> enforced by a test that asserts passing it raises `KeyError`
+> (`tests/test_serving_state_drift.py::test_rms_ratio_key_would_raise_if_ever_passed_to_observe_drift`).
+> Measured over real HTTP, replaying all 2,156 real `1st_test` files at full resolution
+> (`python -m demo.playback --raw-dir data/raw --experiment 1st_test --interval 0`):
+> `rms`'s z-score reached **10.02** (flagged `drifting: true`) — exactly the raw-amplitude
+> scale mismatch this section predicts, measured directly rather than assumed. `rms_ratio`
+> itself read 2.87 at the same moment, well within the range the classifier already handles
+> via its `label`, confirming it carries no independent drift signal here.
+
 ## 3. Where the drift computation lives, and when it runs
 
 **Decision: computed inline, per request, inside the existing `/predict` handler — no
@@ -222,6 +249,19 @@ shift — the thing "distribution shift" in `docs/PRD.md` §10's own phrasing ac
 pushes most or all of the next several readings past the threshold and satisfies the rule
 within 3 requests of onset, not after the full window fills.
 
+> **Implemented in Issue #90.** `BearingState` gains `drift_history` (one
+> `deque(maxlen=ROLLING_WINDOW)` per monitored feature, imported from the same
+> `src.features.extraction.ROLLING_WINDOW` constant `rms_history`/`skewness_history`
+> already use — no second window size), `latest_z_scores`, and `predicted_class_counts`,
+> all updated inline inside `observe_drift`/`record_prediction`, called from
+> `compute_online_features`/the `/predict` handler respectively — no lock, no background
+> task, added anywhere. The exact 3-of-10 boundary is pinned in both directions
+> (`tests/test_serving_state_drift.py::test_the_third_extreme_reading_in_the_window_flips_drifting`,
+> `..._reverts_to_nominal_once_extreme_readings_age_out_of_the_window`), matching this
+> project's convention of testing state-machine transitions at the exact point rather than
+> "eventually true" (Issue #82's `baseline_status` boundary tests, in
+> `tests/test_serving_features.py`, are the precedent).
+
 ### Why two surfaces, not one
 
 `docs/serving_design.md`'s M5-readiness note already flagged that a drift field is a natural,
@@ -262,6 +302,13 @@ GET /monitoring/drift
   }
 }
 ```
+
+> **Implemented in Issue #90**, matching this shape exactly. `PredictResponse` gains
+> `drift_status: "nominal" | "drifting"` (`src/serving/api.py`); `GET /monitoring/drift`
+> returns `{"bearings": {...}}`, one entry per `bearing_id` `BearingStateStore` currently
+> holds, built from a plain loop over the store with no computation beyond what `/predict`
+> already wrote (`tests/test_monitoring_endpoint.py` pins the shape key-by-key, and
+> separately asserts `"rms_ratio"` never appears as a key inside `"features"`).
 
 The per-feature (mean, std) baseline pairs themselves are computed once, offline, from
 `training_dataset.parquet` — the implementation issue commits them to a small file alongside
@@ -313,6 +360,15 @@ project's stated scale rather than a general dislike of the tools:
   like training data." A static page reading one endpoint is not a scaled-down Grafana; it is
   the right-sized tool for a fundamentally smaller job.
 
+> **Implemented in Issue #90.** `src/serving/static/monitoring.html` -- one file, inline
+> CSS/JS, no `<script src=...>` or `<link>` to anything external
+> (`tests/test_monitoring_endpoint.py::test_monitoring_page_makes_no_external_requests`
+> asserts neither `"http://"` nor `"https://"` appears anywhere in it). Served by
+> `GET /monitoring` via a plain `FileResponse` -- no new dependency (`fastapi.responses` is
+> already part of the pinned `fastapi` package), no change to `Dockerfile`/
+> `docker-compose.yml` (`COPY src/ ./src/` already carries the new file; no new port, no
+> new service).
+
 This is a documented, deliberate deviation from §8/§9's *proposed* shape, not from a
 *committed* one — matching the project's existing convention of naming and justifying
 deviations rather than silently drifting from them (`docs/CONTRIBUTING.md`'s own
@@ -361,6 +417,19 @@ be expected to flip `rms`'s `drifting` flag within the 3-of-10-request persisten
 Constructing and documenting that specific walkthrough is implementation-issue work, not a
 question this design leaves open — the mechanism that would produce it is already fully
 specified above.
+
+> **Implemented and verified in Issue #90 — this walkthrough was actually run, not just
+> anticipated.** `python -m src.serving.main` (real process, real port, no `TestClient`) +
+> `python -m demo.playback --raw-dir data/raw --experiment 1st_test --interval 0` against
+> it: `baseline_status` flipped `warming_up` → `stable` at exactly request 50;
+> `predicted_class_counts` accumulated to `{"Normal": 1834, "Degrading": 303, "Critical":
+> 19}`, matching the playback client's own tally exactly; and `rms`'s `drifting` flag
+> reached `true` (`z ≈ 10.02`) well before the replay finished. `GET /monitoring` was loaded
+> in a real headless-Chromium browser session (not curl) and screenshotted, showing three
+> tracked bearings with the drifting ones visibly highlighted. `docker compose up` itself
+> could not be exercised in the environment this was implemented in — Docker Hub image
+> pulls were network-blocked there — so this ran the identical `src/serving`/`demo`
+> application code directly instead; see the Issue #90 PR description for the full account.
 
 ## 6. Non-goals
 

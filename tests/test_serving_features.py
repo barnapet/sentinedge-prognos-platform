@@ -27,6 +27,7 @@ from src.features.extraction import (
     load_channel,
 )
 from src.labeling import LABELS
+from src.serving.drift import DRIFT_NOMINAL
 from src.serving.features import (
     SERVING_FEATURE_COLUMNS,
     OnlineFeatureExtractor,
@@ -322,6 +323,7 @@ def test_feature_vector_order_matches_the_persisted_serving_model():
         skewness_smoothed=0.03,
         baseline_status=WARMING_UP,
         file_count=7,
+        drift_status=DRIFT_NOMINAL,
     )
 
     assert SERVING_FEATURE_COLUMNS == manifest["feature_columns"]
@@ -347,7 +349,11 @@ def test_as_dict_carries_the_cold_start_disclosure_alongside_the_features():
 
     payload = features.as_dict()
 
-    assert set(payload) == set(SERVING_FEATURE_COLUMNS) | {"baseline_status", "file_count"}
+    assert set(payload) == set(SERVING_FEATURE_COLUMNS) | {
+        "baseline_status",
+        "file_count",
+        "drift_status",
+    }
     assert payload["baseline_status"] == WARMING_UP
 
 

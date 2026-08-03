@@ -1,4 +1,5 @@
-"""Per-bearing rolling state for online feature computation (Issue #82).
+"""Per-bearing rolling state for online feature computation (Issue #82; drift tracking
+added in Issue #90).
 
 `src/features/extraction.py` computes `rms_ratio` and `skewness_smoothed` as `pandas`
 column operations over a whole experiment at once. Serving sees one file at a time, so the
@@ -19,6 +20,14 @@ decision in code -- nothing more:
 rather than re-declared, for the same anti-drift reason `src/training/train_serving_model.py`
 imports its model configuration: if the batch pipeline's window or baseline size ever
 changes, serving cannot silently keep using the old one.
+
+`docs/monitoring_design.md` Section 3 extends this same class with two more fields, on the
+same terms: `drift_history` (a rolling per-feature record of extreme-z-score flags, reusing
+`ROLLING_WINDOW` rather than a second arbitrary window size) and `predicted_class_counts` (a
+running tally of served labels). Both are read and written inline, inside this module's
+existing `observe()`/request-path methods -- no lock, no background task, per that section's
+own reasoning: adding one here would claim a level of concurrency safety this single-process,
+in-memory design does not otherwise provide.
 
 ## Concurrency (`docs/serving_design.md` Section 2)
 
@@ -48,6 +57,15 @@ from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
 from src.features.extraction import BASELINE_N_FILES, ROLLING_WINDOW
+from src.serving.drift import (
+    DRIFT_BASELINE,
+    DRIFT_DRIFTING,
+    DRIFT_NOMINAL,
+    MONITORED_FEATURES,
+    PERSISTENCE_MIN_COUNT,
+    compute_z_score,
+    is_extreme,
+)
 
 # The two values `baseline_status` can take (`docs/serving_design.md` Section 3). Named
 # constants rather than bare strings so the API layer and the tests agree on the spelling.
@@ -99,6 +117,11 @@ class BearingState:
 
     rolling_window: int = ROLLING_WINDOW
     baseline_n_files: int = BASELINE_N_FILES
+    # docs/monitoring_design.md Section 1: overridable per instance so tests can inject a
+    # synthetic baseline; defaults to the committed `models/drift_baseline.json` (Section 3).
+    drift_baseline: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: DRIFT_BASELINE
+    )
 
     rms_history: deque[float] = field(init=False, repr=False)
     skewness_history: deque[float] = field(init=False, repr=False)
@@ -106,9 +129,16 @@ class BearingState:
     baseline_rms: float | None = field(init=False, default=None)
     file_count: int = field(init=False, default=0)
 
+    drift_history: dict[str, deque[bool]] = field(init=False, repr=False)
+    latest_z_scores: dict[str, float] = field(init=False, default_factory=dict, repr=False)
+    predicted_class_counts: dict[str, int] = field(init=False, default_factory=dict, repr=False)
+
     def __post_init__(self) -> None:
         self.rms_history = deque(maxlen=self.rolling_window)
         self.skewness_history = deque(maxlen=self.rolling_window)
+        self.drift_history = {
+            feature: deque(maxlen=self.rolling_window) for feature in MONITORED_FEATURES
+        }
 
     def observe(self, rms: float, skewness: float) -> None:
         """Record one file's raw (stateless) RMS and skewness, advancing this bearing.
@@ -174,6 +204,55 @@ class BearingState:
         """`rolling(rolling_window, min_periods=1).mean()` of `skewness`, latest file."""
         return window_mean(self.skewness_history)
 
+    def observe_drift(self, feature_values: dict[str, float]) -> None:
+        """Record one file's monitored feature values against the drift baseline
+        (`docs/monitoring_design.md` Sections 1-3), updating each feature's rolling
+        extreme-flag history.
+
+        Call once per file, alongside `observe()` -- after `skewness_smoothed` is
+        available, since it is one of the four monitored values. `feature_values` is keyed
+        by `MONITORED_FEATURES`; `rms_ratio` is never a key here, by construction, so it
+        cannot reach `drift_history` or `drift_status` (Section 2's exclusion).
+        """
+        for feature, value in feature_values.items():
+            mean, std = self.drift_baseline[feature]
+            z = compute_z_score(value, mean, std)
+            self.latest_z_scores[feature] = z
+            self.drift_history[feature].append(is_extreme(z))
+
+    def feature_drift(self, feature: str) -> dict[str, float | bool]:
+        """This feature's latest z-score, and whether it is *persistently* drifting.
+
+        "Persistently" is `docs/monitoring_design.md` Section 3's 3-of-10 rule: at least
+        `PERSISTENCE_MIN_COUNT` of the last `rolling_window` readings were extreme. A single
+        extreme reading is expected occasionally by chance (Section 1's Chebyshev bound), so
+        it alone must not flip this.
+        """
+        history = self.drift_history[feature]
+        return {
+            "z": self.latest_z_scores.get(feature, 0.0),
+            "drifting": sum(history) >= PERSISTENCE_MIN_COUNT,
+        }
+
+    @property
+    def drift_status(self) -> str:
+        """`"drifting"` if any monitored feature is persistently drifting, else
+        `"nominal"`. `rms_ratio` is excluded from `MONITORED_FEATURES`
+        (`docs/monitoring_design.md` Section 2), so it can never drive this -- there is no
+        code path here that reads it."""
+        return (
+            DRIFT_DRIFTING
+            if any(self.feature_drift(feature)["drifting"] for feature in MONITORED_FEATURES)
+            else DRIFT_NOMINAL
+        )
+
+    def record_prediction(self, label: str) -> None:
+        """Tally one more served label -- `docs/monitoring_design.md` Sections 3/5's
+        `predicted_class_counts`. Takes the label the classifier already produced; does not
+        recompute or re-derive it.
+        """
+        self.predicted_class_counts[label] = self.predicted_class_counts.get(label, 0) + 1
+
 
 class BearingStateStore:
     """`bearing_id` -> `BearingState`, in memory, for one process.
@@ -188,9 +267,11 @@ class BearingStateStore:
         self,
         rolling_window: int = ROLLING_WINDOW,
         baseline_n_files: int = BASELINE_N_FILES,
+        drift_baseline: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         self.rolling_window = rolling_window
         self.baseline_n_files = baseline_n_files
+        self.drift_baseline = drift_baseline if drift_baseline is not None else DRIFT_BASELINE
         self._states: dict[str, BearingState] = {}
 
     def get_or_create(self, bearing_id: str) -> BearingState:
@@ -199,6 +280,7 @@ class BearingStateStore:
             self._states[bearing_id] = BearingState(
                 rolling_window=self.rolling_window,
                 baseline_n_files=self.baseline_n_files,
+                drift_baseline=self.drift_baseline,
             )
         return self._states[bearing_id]
 
