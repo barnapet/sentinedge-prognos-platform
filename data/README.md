@@ -3,6 +3,13 @@
 This directory is **gitignored** — the raw dataset is not committed to the repository (see
 root `.gitignore`). This README documents where it comes from and how to reproduce it.
 
+> **You do not need any of this to run the demo.** `docker compose up` replays a committed
+> 6.0 MB slice of real signal (`demo/sample_data/`, cut by `demo/build_sample.py`) and needs
+> no download at all — see the README's Quick start. Fetch the full dataset only to run the
+> notebooks, rebuild the feature/training pipelines, or replay an experiment the sample does
+> not cover. Measured from this repo's own CI runs, acquiring it costs 216–269s of download
+> and extraction on a datacenter connection, plus the tooling below (Issue #86).
+
 ## Source
 
 - **Name:** IMS Bearing Dataset (Center for Intelligent Maintenance Systems, University of

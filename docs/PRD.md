@@ -186,11 +186,24 @@ revisited before the health-state classifier is working end-to-end.
 The MVP is considered done when all of the following hold, verifiable by a reviewer with no
 prior context:
 
-- [ ] Fresh `git clone` → running demo (`docker compose up` or documented equivalent) in
-      under 15 minutes, following only the README.
-- [ ] `/predict` endpoint accepts a feature window and returns a health-state prediction
+- [x] Fresh `git clone` → running demo (`docker compose up` or documented equivalent) in
+      under 15 minutes, following only the README. **Measured (Issue #86), cold Docker cache
+      — base image pulled, every wheel downloaded: 3s to clone (16 MB), 53s to a healthy
+      containerised API, first predictions ~2s after that. Roughly one minute against a
+      fifteen-minute budget.** The blocker this criterion faced was the dataset, not the
+      model: `docs/serving_model_artifact.md` (#80) flagged that committing the model
+      cleared only one of two obstacles while `data/*` stayed gitignored. Resolved by
+      committing a 6.0 MB slice of real signal (`demo/sample_data/`, see `demo/sample.py`
+      for what it is and why it is cut that way) rather than requiring the 1.1 GB download —
+      which this repo's own CI measures at 216–269s of download and extraction alone, on a
+      datacenter connection, before any of `unrar`/`py7zr`/6.2 GB of disk.
+- [x] `/predict` endpoint accepts a feature window and returns a health-state prediction
       (Normal / Degrading / Critical) with a response time under 500ms (single-window,
-      no batch queueing — see Section 7).
+      no batch queueing — see Section 7). **Measured (Issue #84) over real HTTP with a full
+      20,480-point signal: p50 22ms, p95 25ms, max 34ms.** The contract takes the raw signal
+      rather than a pre-computed feature window, deliberately — `docs/serving_design.md`
+      Section 1 gives the server sole ownership of feature computation so the rolling-window
+      and baseline logic cannot drift into a second client-side copy.
 - [x] At least one MLflow run is visible, showing the trained model, its metrics, and its
       parameters — not just a pickled file with no lineage. Seven runs across two
       experiments (`m3-imbalance-comparison`, `m3-baseline-ablation`), covering #21's five
