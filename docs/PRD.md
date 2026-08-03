@@ -141,6 +141,19 @@ revisited before the health-state classifier is working end-to-end.
 
 ## 8. Proposed Architecture (MVP)
 
+> **This section is the original, pre-build proposal — kept as written, not edited to match
+> what got built.** For the as-built pipeline, see README.md's "Architecture" section (a
+> Mermaid diagram, added in Issue #92/M6-Packaging), which also lists every point where the
+> implementation ended up differing from what's proposed below: the monitoring stack (static
+> page + JSON endpoint, not Prometheus/Grafana — Section 9 and `docs/monitoring_design.md`
+> Section 4 already flagged this hedge), two separate training paths instead of one generic
+> "Training pipeline" box, the `/predict` contract's raw-signal-in decision
+> (`docs/serving_design.md` Section 1), and MLflow's SQLite tracking store
+> (`docs/mlflow_tracking.md`). Reconciling this section by rewriting it would erase the record
+> of what was originally proposed versus what the constraints of an actual implementation
+> changed — the same "document deviations, don't silently drift" convention this PRD already
+> follows for Section 10a's repo-structure target.
+
 ```
 [Raw vibration files] 
       -> [Preprocessing / feature extraction pipeline] (offline, versioned)
@@ -180,6 +193,13 @@ revisited before the health-state classifier is working end-to-end.
 - Docker + Docker Compose for packaging
 - Prometheus + Grafana (or a lighter alternative) for monitoring
 - pytest for testing the pipeline and API
+
+**As-built vs. this list:** the "lighter alternative" this section already hedged for
+monitoring is what got built — a static HTML/vanilla-JS page + JSON endpoint, no Prometheus,
+no Grafana (`docs/monitoring_design.md` Section 4, README's "Architecture" section). MLflow's
+tracking store is `mlflow-skinny` + SQLite, not the full `mlflow` package (`docs/mlflow_tracking.md`).
+Everything else in this list — Python, scikit-learn, FastAPI, Docker/Compose, pytest — matches
+what was actually used.
 
 ## 10. Acceptance Criteria (Definition of Done for MVP)
 
@@ -223,10 +243,24 @@ prior context:
       (`docs/model_training_decision.md` Section 3a's raw-RMS scale problem) visibly flips
       `rms`'s `drifting` flag (`z ≈ 10`) within the documented persistence window, over real
       HTTP, in an actual browser tab.
-- [ ] README documents: the architecture, the classification-vs-RUL decision and why, what was
+- [x] README documents: the architecture, the classification-vs-RUL decision and why, what was
       deliberately left out of scope (Section 4) and why, and the demo playback timescale
-      caveat (Section 8).
-- [ ] Repo structure matches Section 10a below (or documents any deviation).
+      caveat (Section 8). **Delivered (Issue #92):** README's new "Architecture" section
+      carries a Mermaid diagram of the as-built pipeline plus an explicit "Deviations from
+      Section 8/9" list (monitoring shape, the two separate training paths, the `/predict`
+      raw-signal contract, MLflow's SQLite store) — not redrawing the original proposal and
+      hoping no one compares them. The classification-vs-RUL rationale (Section 6), the
+      Section 4 non-goals, and the Section 8 compressed-timescale caveat were already present
+      from earlier milestones and were re-verified, not re-written, as part of this issue's
+      full read-through.
+- [x] Repo structure matches Section 10a below (or documents any deviation). **Verified
+      (Issue #92)** against `git ls-files`, file by file: every tracked file has an entry (or
+      falls under a summarizing line, e.g. `tests/`) in README's "Repo structure" tree, and
+      every `docs/*.md` file is named explicitly in README's "Learn more" section (previously
+      several M2 decision docs were only reachable via a wildcard bullet naming issue numbers,
+      not filenames — fixed). `LICENSE` (Apache 2.0) was missing from the tree entirely; added.
+      The `10a` deviations already noted below (CONTRIBUTING.md's location) remain accurate;
+      no new undocumented deviation was found.
 
 ## 10a. Repo Structure (target)
 

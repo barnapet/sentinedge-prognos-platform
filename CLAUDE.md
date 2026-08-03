@@ -254,6 +254,30 @@ LOEO trains three models per configuration and there is no single "the model" to
   directly is a real check on the *application logic*, not a substitute for actually
   building the container when a change touches what gets `COPY`'d into it.
 
+**M6-Packaging is complete** (#92), the final milestone of the original MVP plan
+(M1-EDA → M1.5 → M2-Features → M3-Model → M4-Serving → M5-Monitoring → M6-Packaging).
+
+- **#92** — a real architecture diagram (README's new "Architecture" section, a Mermaid
+  flowchart of the as-built pipeline), a reconciled `docs/PRD.md` §8/§9 (both now carry an
+  explicit pointer to that diagram and a named list of where the build diverged from the
+  original proposal, rather than being edited to match it after the fact), and a full
+  README re-verification. Two things later work should not re-derive: **the one-command
+  demo criterion was already met, as of #86** — `docker-compose.yml`'s `demo` service has
+  always declared `depends_on: api: condition: service_healthy`, so `docker compose up`
+  alone builds, starts, and replays without a second terminal; #92 re-verified this against
+  a genuinely cold cache (build cache and image removed, not just containers stopped) rather
+  than assuming the existing README text was still accurate, measuring **~2s clone, ~71s to
+  a healthy API**, with the replay reproducing the exact same 197/197, 194/197 (98.5%)
+  agreement, warming_up→stable-at-50 result every time. **Re-running the test suite for this
+  verification surfaced one pre-existing, environment-sensitive failure** —
+  `compute_feature_baseline`'s pandas `.mean()`/`.std()` (Issue #90) isn't pinned against
+  numpy/pandas summation-order drift the way `#82`/`#83` already pinned the online rolling
+  mean, so a locally-recomputed drift baseline can disagree with the committed
+  `models/drift_baseline.json` in its last few significant digits. It only surfaces when
+  `data/processed/training_dataset.parquet` exists locally (the test skips on a fresh clone,
+  so this never affects the documented Quick Start), so it was filed as Issue #93 rather than
+  fixed inside a docs-only milestone.
+
 ## When in doubt
 
 Prefer asking over assuming when a decision would affect scope, architecture, or the
