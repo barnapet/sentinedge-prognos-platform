@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir -r requirements-serving.txt
 # dataset), notebooks/, tests/, and demo/ -- the playback client talks to this container
 # over HTTP and is not part of it.
 COPY src/ ./src/
-COPY models/serving_model.joblib models/serving_model_manifest.json ./models/
+COPY models/serving_model.joblib models/serving_model_manifest.json models/drift_baseline.json ./models/
 
 EXPOSE 8000
 

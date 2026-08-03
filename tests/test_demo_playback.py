@@ -286,3 +286,38 @@ def test_dockerignore_excludes_the_raw_dataset():
     """Without this the 6.2 GB dataset would be sent to the daemon as build context on
     every build -- the single biggest avoidable cost in the time-to-demo measurement."""
     assert "data/" in (REPO_ROOT / ".dockerignore").read_text().splitlines()
+
+
+def test_dockerfile_copies_every_committed_models_artifact():
+    """Regression test for a real CI failure on Issue #90's PR: `models/drift_baseline.json`
+    was added as a committed `.gitignore` exception (alongside `serving_model.joblib`/
+    `serving_model_manifest.json`) but the Dockerfile's `COPY models/...` line was not
+    extended for it, so `src/serving/drift.py`'s eager load raised `FileNotFoundError` at
+    container startup -- invisible when running the app directly on a host where the file
+    already exists at its repo-relative path, only surfaced once `compose-demo`'s CI check
+    actually built and started the container.
+
+    Derives the expected file list from `.gitignore` itself (every `!models/*.json`/
+    `!models/*.joblib` exception, excluding `.gitkeep`) rather than hardcoding it, so a
+    *future* committed artifact added the same way is caught by this same test without
+    anyone remembering to update it here too.
+    """
+    gitignore_lines = (REPO_ROOT / ".gitignore").read_text().splitlines()
+    committed_artifacts = [
+        line[1:].removeprefix("models/")
+        for line in gitignore_lines
+        if line.startswith("!models/") and line != "!models/.gitkeep"
+    ]
+    assert committed_artifacts, "expected at least one committed models/ exception in .gitignore"
+
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    copy_lines = [line for line in dockerfile.splitlines() if line.startswith("COPY models/")]
+    assert copy_lines, "Dockerfile must have a COPY instruction for models/"
+    copy_instructions = " ".join(copy_lines)
+
+    for artifact in committed_artifacts:
+        assert f"models/{artifact}" in copy_instructions, (
+            f"models/{artifact} is committed (per .gitignore) but not COPYed into the "
+            "serving image -- the container will FileNotFoundError at startup if any "
+            "code path loads it eagerly"
+        )

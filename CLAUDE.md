@@ -243,7 +243,16 @@ LOEO trains three models per configuration and there is no single "the model" to
   `docker compose up`; a real headless-browser screenshot of `GET /monitoring` and the exact
   measured numbers (`baseline_status` flip at request 50, `predicted_class_counts` matching
   the playback client's own tally, `rms`'s `z ≈ 10.02` on `1st_test`) are in the PR and
-  back-annotated into `docs/monitoring_design.md`.
+  back-annotated into `docs/monitoring_design.md`. **That substitution had a real blind
+  spot, caught by CI and not by the direct-process verification**: `Dockerfile`'s
+  `COPY models/serving_model.joblib models/serving_model_manifest.json ./models/` line was
+  not extended for the new `models/drift_baseline.json`, so the container's app failed at
+  import time (`src/serving/drift.py` loads the baseline eagerly) — invisible when running
+  directly on a host where the file already exists at its repo-relative path, and only
+  surfaced once the `compose-demo` CI check actually built and started the container. Fixed
+  in the same PR once CI reported it. The lesson carried forward: running the application
+  directly is a real check on the *application logic*, not a substitute for actually
+  building the container when a change touches what gets `COPY`'d into it.
 
 ## When in doubt
 

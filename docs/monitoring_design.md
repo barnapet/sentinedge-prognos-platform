@@ -365,9 +365,15 @@ project's stated scale rather than a general dislike of the tools:
 > (`tests/test_monitoring_endpoint.py::test_monitoring_page_makes_no_external_requests`
 > asserts neither `"http://"` nor `"https://"` appears anywhere in it). Served by
 > `GET /monitoring` via a plain `FileResponse` -- no new dependency (`fastapi.responses` is
-> already part of the pinned `fastapi` package), no change to `Dockerfile`/
-> `docker-compose.yml` (`COPY src/ ./src/` already carries the new file; no new port, no
-> new service).
+> already part of the pinned `fastapi` package), no new port, no new service in
+> `docker-compose.yml`. **`docker-compose.yml` needed no change; `Dockerfile` did** — the
+> static page itself is covered by the existing `COPY src/ ./src/` line, but
+> `models/drift_baseline.json` (Section 1) is copied by a *separate* line
+> (`COPY models/serving_model.joblib models/serving_model_manifest.json ./models/`) that
+> this issue's first draft forgot to extend. Caught by the `compose-demo` CI check itself
+> (a real `FileNotFoundError` at container startup, since `src/serving/drift.py` loads the
+> baseline eagerly at import time) — exactly the kind of thing that check exists to catch,
+> not assumed to be fine because the code worked outside a container.
 
 This is a documented, deliberate deviation from §8/§9's *proposed* shape, not from a
 *committed* one — matching the project's existing convention of naming and justifying
