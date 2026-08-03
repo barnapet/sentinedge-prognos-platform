@@ -10,11 +10,13 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from src.training.compute_drift_baseline import (
     BASELINE_PATH,
     MONITORED_FEATURES,
+    _compensated_mean_std,
     build_baseline_manifest,
     compute_feature_baseline,
     load_drift_baseline,
@@ -76,6 +78,30 @@ def test_baseline_pools_every_label_not_just_normal(df):
 
 def test_baseline_covers_every_monitored_feature(df):
     assert set(compute_feature_baseline(df)) == set(MONITORED_FEATURES)
+
+
+def test_compensated_mean_recovers_precision_pandas_mean_loses():
+    """Regression test for Issue #93: a real CI-observed drift between the committed
+    `models/drift_baseline.json` and a locally recomputed baseline, traced to plain pandas
+    `.mean()`/`.std()` (Issue #90's original implementation) losing precision on pooled sums
+    that largely cancel toward a near-zero value -- exactly the shape of three of the four
+    monitored features (`docs/monitoring_design.md` Section 1).
+
+    `[1e16, 1.0, -1e16]` is the textbook catastrophic-cancellation case: the `1.0` is far
+    below the precision of `1e16`, so any summation that adds the huge values first loses it
+    entirely. Measured directly (not assumed) against this repo's pinned versions
+    (`numpy==2.4.6`, `pandas==3.0.5`): `pandas.Series.mean()` and `numpy.mean()` both return
+    `0.0` here, silently discarding the `1.0`, while `math.fsum` -- what
+    `src.serving.state.window_mean` already uses for the same reason (Issue #82) -- recovers
+    the exact `1.0` regardless of numpy/pandas version, because its result is a property of
+    the input alone.
+    """
+    values = pd.Series([1e16, 1.0, -1e16])
+
+    assert values.mean() == 0.0, "pandas must still lose this -- otherwise the test proves nothing"
+
+    mean, _ = _compensated_mean_std(values)
+    assert mean == pytest.approx(1 / 3)
 
 
 # --- manifest shape -------------------------------------------------------------------
