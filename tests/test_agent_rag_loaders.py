@@ -132,13 +132,13 @@ def test_public_references_file_has_exactly_the_four_launch_entries():
 
 
 def test_public_reference_paywalled_iso_entries_carry_no_body_text():
-    """Section 4: paywalled sources are indexed as citation + published scope/abstract
-    only, never body text. Guarded here so a future edit can't silently smuggle body text
+    """Section 4: paywalled sources are indexed as citation only, never body text or 
+    scope text Guarded here so a future edit can't silently smuggle body/scope text
     into these two entries without a test noticing.
     """
     entries = {entry["id"]: entry for entry in load_references()}
     for source_id in ("iso_15243_2017", "iso_20816_1_2016"):
-        assert entries[source_id]["treatment"] == "citation_plus_scope"
+        assert entries[source_id]["treatment"] == "citation_only"
         # The bibliography's own Bibliography/Annex material (deep body content) must not
         # be present -- only Clause 1 ("Scope") text is indexed.
         assert "Annex" not in entries[source_id]["text"]
