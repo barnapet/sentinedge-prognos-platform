@@ -1,0 +1,23 @@
+# Seed data for the agent layer's inventory demo (Issue #100, docs/agent_design.md Section 7).
+#
+# Only one fact in this file is real: the Rexnord ZA-2115 part identity (part_number ZA-2115,
+# first row below) is the IMS test rig's actual bearing, per the dataset's own distributed
+# documentation (docs/agent_design.md Section 4's public_reference table).
+#
+# EVERYTHING ELSE IN THIS FILE IS INVENTED DEMO DATA. quantity_on_hand, unit_price_usd,
+# lead_time_days, and location are invented demo values for every row, including ZA-2115 --
+# there is no warehouse, so there cannot be real stock levels. The additional part rows below
+# ZA-2115 are plausible MRO catalog entries for a bearing-maintenance context, not verified
+# real manufacturer SKUs; they exist so the seed is a real inventory table, not a one-row
+# placeholder.
+part_number,description,bearing_type,quantity_on_hand,unit_price_usd,lead_time_days,location
+ZA-2115,"Rexnord ZA-2115 double-row bearing (IMS test rig bearing type)",double-row cylindrical roller,4,850.00,21,Warehouse A - Shelf 12
+ZA-2115-SEAL-KIT,"Labyrinth seal kit, ZA-2115 compatible",,12,45.50,7,Warehouse A - Shelf 12
+LUBE-NLGI2-400G,"High-temperature bearing grease, NLGI 2, 400g cartridge",,30,18.75,3,Warehouse A - Shelf 3
+BRG-6205-2RS,"Deep-groove ball bearing, 6205-2RS, sealed",deep-groove ball,25,22.00,5,Warehouse A - Shelf 8
+BRG-6206-2RS,"Deep-groove ball bearing, 6206-2RS, sealed",deep-groove ball,18,26.50,5,Warehouse A - Shelf 8
+TOOL-BRG-PULLER-KIT,"Bearing puller/installer tool kit",,3,210.00,14,Warehouse B - Tool Crib
+SENSOR-ACC-PZ100,"Piezoelectric accelerometer, replacement for condition-monitoring rig",,6,320.00,10,Warehouse B - Electronics
+COLLAR-SHAFT-LOCK-25MM,"Shaft locking collar, 25mm bore",,40,8.25,4,Warehouse A - Shelf 5
+COUPLING-FLEX-25MM,"Flexible shaft coupling, 25mm bore",,10,65.00,6,Warehouse A - Shelf 9
+SENSOR-RTD-BRG-TEMP,"RTD temperature sensor, bearing housing mount",,15,55.00,8,Warehouse B - Electronics
