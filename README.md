@@ -431,3 +431,8 @@ check — see `.github/workflows/notebook-ci.yml`.
 - **`docs/monitoring_design.md`** — the M5 drift signal (z-score against a pooled training
   baseline, why `rms_ratio` is excluded), where the computation lives, and why the
   dashboard is a static page rather than Prometheus/Grafana (#88, implemented in #90).
+- **`docs/agent_design.md`** — the M7 agent-layer design decisions (#96): the reactive Q&A
+  agent, the guardrail critic, and the maker-checker executor; the MCP tool layer over the
+  existing endpoints; what the RAG corpus is and why it contains zero fictional documents;
+  the four-tier evaluation harness; and why the proactive fleet agent is deferred to Phase 2.
+  Decision-only — this is a new phase beyond the original M1-M6 MVP plan, not part of it.
