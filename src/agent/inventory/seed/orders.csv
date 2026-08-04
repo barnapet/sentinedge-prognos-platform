@@ -1,0 +1,4 @@
+# Seed data for the agent layer's inventory demo (Issue #100, docs/agent_design.md Section 7).
+# Header only, no rows -- the demo starts with an empty order history; every order visible in
+# a running demo was placed through place_order's transactional path during that run.
+order_id,part_number,quantity,bearing_id,requested_by,approved_by,approved_at,created_at,status
