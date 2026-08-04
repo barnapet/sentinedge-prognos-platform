@@ -46,3 +46,18 @@ alembic==1.18.5
 fastapi==0.141.1
 uvicorn==0.52.1
 httpx==0.28.1
+# Added in M7 (Issue #98): local embeddings + the vector DB client for the RAG index
+# (docs/agent_design.md Section 3). Verified empirically in a clean environment -- the same
+# check Issue #74 ran for mlflow, per Section 3's "this reasoning must be verified, not
+# assumed" note -- that neither conflicts with this project's pinned pandas==3.0.5/
+# numpy==2.4.6/scipy==1.17.1/scikit-learn==1.9.0 (Issue #27): both packages' own
+# Requires-Dist metadata carries no pandas/scipy/scikit-learn constraint at all, and their
+# numpy constraint for Python 3.11 (this repo's pinned interpreter) is `numpy>=1.21`, which
+# 2.4.6 satisfies. `pip install` into a clean venv on top of requirements.txt left every
+# pinned version bit-for-bit unchanged (`pip check` clean) -- unlike mlflow, no fallback was
+# needed. `qdrant-client` is the thin HTTP/gRPC client for the Qdrant container
+# (docker-compose.yml's opt-in `agent` profile); `fastembed` runs BAAI/bge-small-en-v1.5
+# locally (no API key, no second vendor) and was smoke-tested end-to-end (real 384-dim
+# vectors from real text, not just import-checked).
+fastembed==0.8.0
+qdrant-client==1.18.0

@@ -13,6 +13,16 @@
 # That is sufficient for this design, because multi-worker/horizontal serving is an explicit
 # non-goal (docs/serving_design.md Section 5) -- correct rolling state across replicas needs
 # the shared store that document rules out.
+#
+# `qdrant`, below, is the one service gated behind the `agent` compose profile (M7,
+# docs/agent_design.md Section 3). Plain `docker compose up` never starts it -- Compose
+# skips any service carrying a `profiles:` list unless that profile is explicitly
+# requested, so the default path stays exactly `api` + `demo` and docs/PRD.md Section 10's
+# fresh-clone criterion (~71s to a healthy API, no dataset download, re-verified #92) is
+# unaffected. `docker compose --profile agent up` additionally starts it. The agent layer
+# needs an `ANTHROPIC_API_KEY` a fresh clone does not have, so it does not meet that
+# criterion and does not claim to (docs/agent_design.md Section 3) -- this profile split is
+# what keeps that limitation from touching the criterion the MVP does meet.
 
 services:
   api:
@@ -45,3 +55,39 @@ services:
     # demo, and 197 snapshots at 2s would be 6.6 minutes before it finished. Run
     # `python -m demo.playback` on the host for the full-cadence version.
     command: ["python", "-m", "demo.playback", "--url", "http://api:8000", "--interval", "0.5"]
+
+  # Vector DB for the RAG index (Issue #98, docs/agent_design.md Section 3). Opt-in only --
+  # see the profile note above `services:`. Named volume rather than a bind mount so a
+  # collection persists across `docker compose --profile agent up`/`down` cycles but is
+  # trivially wiped with `docker compose down -v` (docs/agent_design.md Section 7 uses the
+  # same rebuildable-state posture for the inventory SQLite database). Official image, no
+  # Dockerfile of our own -- there is no application code to bake in, only the vector store
+  # itself; `src/agent/rag/index.py` (run on the host or in a future agent-service
+  # container, out of this issue's scope) is the client that populates it.
+  qdrant:
+    # Pinned to match src/agent/rag/index.py's `qdrant-client==1.18.0` (requirements.txt) --
+    # the client warns/errors on a server more than one minor version away, checked
+    # empirically against v1.13.4 before landing on this tag.
+    image: qdrant/qdrant:v1.18.0
+    profiles: ["agent"]
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # The official image has no curl/wget/python3 (verified: Debian-slim base, coreutils +
+    # bash only) -- checked directly rather than assumed, the same "verify, don't assume"
+    # discipline as the fastembed dependency check above. `bash`'s `/dev/tcp` pseudo-device
+    # is what's actually available, so the healthcheck speaks raw HTTP over it and greps
+    # for a 200 -- but Docker's `CMD-SHELL` itself runs under `/bin/sh`, which this image
+    # symlinks to `dash`, and dash does not support `/dev/tcp` ("Directory nonexistent",
+    # confirmed empirically). Wrapping in an explicit `bash -c` is what actually works; also
+    # confirmed empirically, not inferred from the first fix looking plausible.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c \"exec 3<>/dev/tcp/localhost/6333 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '200 OK'\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  qdrant_data:
