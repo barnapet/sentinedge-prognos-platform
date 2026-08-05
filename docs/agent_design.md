@@ -1529,9 +1529,12 @@ discipline as the list above, rather than silence that a reader would have to in
 
 - **Copyright and licensing of indexed content.** Not applicable *by construction* rather than by
   luck, which is why it is stated rather than skipped: every `decision_doc` chunk is this
-  repository's own text, and the four `public_reference` entries are indexed as
-  citation-plus-published-abstract only (Section 4) — a rule adopted for honesty that happens also
-  to be the licensing-safe posture. *Becomes live* on indexing any third-party text in full: an
+  repository's own text, and every `public_reference` entry is either citation-only (title,
+  edition/authors, and URL — no body or abstract text) or, for the one freely distributed source
+  (the IMS dataset's own readme), its full text as legitimately redistributed with the dataset
+  (Section 4) — never a paywalled standard's or paper's body text — a rule adopted for honesty
+  that happens also to be the licensing-safe posture. *Becomes live* on indexing any third-party
+  text in full: an
   OEM manual, a standard's body text, a vendor datasheet. The non-obvious part is that a vector
   index is not a derived statistic — Section 3's payload stores the chunk `text` verbatim, so the
   index **is** a copy, and redistributing it redistributes the source.
@@ -1642,10 +1645,14 @@ rather than left implicit, per this repo's convention (`docs/evaluation_protocol
   evidence and more work to maintain; the refusal category's 100% rule is where the judgement
   is deliberately not a trade-off. Both are stated before the first run so neither can be
   adjusted to flatter a result.
-- **Indexing paywalled standards as citation-plus-public-abstract only** is a defensible reading
-  of what can be redistributed, chosen deliberately over both extremes (indexing their body
-  text, or omitting them entirely). It costs most of their substantive value while keeping the
-  agent able to point a technician at the right standard. Worth a second opinion at review time;
-  the alternative — dropping ISO 15243 and ISO 20816 from the corpus and relying on the two
-  freely available references — is a one-line change to `public_reference`'s source list and no
-  change to any other part of this design.
+- **Indexing the two paywalled ISO standards as citation-only — title, edition, and URL, no
+  Scope or abstract text — is what `public_references.json` actually implements**, not the
+  citation-plus-abstract treatment this document originally proposed. #99's review found the only
+  accessible preview text came from a third-party reseller whose license did not cover
+  redistribution into this repository, and downgraded both entries accordingly (the same
+  treatment already applied to the Qiu et al. paper, whose abstract is similarly withheld by its
+  publisher). What the two ISO entries buy is thinner than the original design assumed — a
+  citable pointer, nothing more — which makes this worth a second opinion at review time even
+  more than when it was first decided; the alternative — dropping ISO 15243 and ISO 20816 from
+  the corpus and relying on the two freely available references — remains a one-line change to
+  `public_reference`'s source list and no change to any other part of this design.
