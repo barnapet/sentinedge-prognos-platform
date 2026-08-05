@@ -23,6 +23,7 @@ from src.agent.inventory.orders import (
     place_order,
 )
 from src.agent.inventory.query import (
+    find_parts,
     get_order_history,
     get_stock_level,
     list_parts_below_reorder_threshold,
@@ -402,3 +403,34 @@ def test_get_order_history_is_chronological(conn):
 
     history = get_order_history(conn, "ZA-2115")
     assert [row["order_id"] for row in history] == [first_id, second_id]
+
+
+def test_find_parts_unfiltered_returns_the_whole_catalogue_sorted(conn):
+    parts = find_parts(conn)
+
+    expected = conn.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
+    assert len(parts) == expected
+    assert [p["part_number"] for p in parts] == sorted(p["part_number"] for p in parts)
+
+
+def test_find_parts_filters_combine_with_and(conn):
+    """Added by Issue #110 for `check_inventory`, whose documented input is an optional
+    `part_number` *and* an optional `bearing_type` (`docs/agent_design.md` Section 2)."""
+    row = conn.execute(
+        "SELECT part_number, bearing_type FROM parts WHERE bearing_type IS NOT NULL LIMIT 1"
+    ).fetchone()
+    part_number, bearing_type = row
+
+    assert [p["part_number"] for p in find_parts(conn, part_number=part_number)] == [part_number]
+    by_type = find_parts(conn, bearing_type=bearing_type)
+    assert by_type and all(p["bearing_type"] == bearing_type for p in by_type)
+    both = find_parts(conn, part_number=part_number, bearing_type=bearing_type)
+    assert [p["part_number"] for p in both] == [part_number]
+    # AND, not OR: a real part number with the wrong type matches nothing.
+    assert find_parts(conn, part_number=part_number, bearing_type="no-such-type") == []
+
+
+def test_find_parts_returns_an_empty_list_for_an_unknown_part(conn):
+    """A not-found is an empty list rather than `None`, so `check_inventory` reports "no
+    matching part" from data instead of branching on a missing value."""
+    assert find_parts(conn, part_number="NO-SUCH-PART") == []

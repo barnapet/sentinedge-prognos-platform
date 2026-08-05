@@ -153,6 +153,20 @@ fourth agent" is not, by itself, a reason.
 separate write-capable one only the executor connects to. Both are thin HTTP clients over the
 already-running FastAPI service (plus local file/DB reads); neither imports `src/serving/`.**
 
+> **Implemented in Issue #110.** `src/agent/mcp/readonly_server.py`
+> (`get_bearing_status`, `predict_health_state`, `check_inventory`,
+> `search_documentation`) and `src/agent/mcp/write_server.py` (`place_order`, and nothing
+> else), each runnable as `python -m src.agent.mcp.<module>`. `find_similar_historical_pattern`
+> is deliberately **not** built: Section 12's `models/trajectory_archive.parquet` does not
+> exist yet, and a stub over invented reference data would be a tool that answers
+> confidently from nothing — `readonly_server.py` carries a one-line registry comment
+> marking where it goes. The approval gate and the agent loop that decides which agent
+> connects to which server are likewise out of that issue's scope; what exists is the
+> servers and their tools. Two additions were needed because their backing halves did not
+> exist yet: `src/agent/rag/retrieval.py` (Issue #99 built the index but nothing that
+> queries it) and `find_parts` in `src/agent/inventory/query.py` (#101 had no
+> filter-by-`bearing_type` query for `check_inventory`'s documented input).
+
 ### Why MCP at all, rather than plain Python functions
 
 The tools could be ordinary Python callables passed to `tool_runner`. MCP is chosen for one
@@ -165,6 +179,15 @@ concrete reason and one honest secondary one:
   callables, the same guarantee would rest on remembering not to put `place_order` in one
   list — a convention, not a boundary. Section 8's tier-4 test asserts this on the client
   configuration, not on model behaviour.
+
+  > **Verified in Issue #110, against real processes rather than an in-process harness** —
+  > the same discipline `src/serving/single_worker.py` set for the single-worker constraint
+  > in #84. `tests/test_agent_mcp_servers.py` spawns each server as an actual subprocess,
+  > speaks MCP over its stdio pipes with a real client, and shows that a well-formed
+  > `place_order` call on the read-only server's connection comes back
+  > `Unknown tool: place_order` with `is_error: true` and zero rows written — and, in the
+  > other direction, that the same call on the write server's connection succeeds, so the
+  > first assertion cannot be passing merely because the tool is broken everywhere.
 - **Honest secondary:** MCP is the interoperability story a reviewer of an AI-platform
   portfolio project would expect to see exercised, and it costs little here. That is a real
   reason and it is stated as one rather than dressed up as a technical necessity.
@@ -183,6 +206,16 @@ than the first: it produces confident, plausible, wrong `rms_ratio` values with 
 So the MCP tools are HTTP clients, exactly as `demo/playback.py` is. `httpx` is already a
 pinned dependency (`requirements.txt`, added in #84 for `TestClient`'s transport), so this adds
 nothing new for the HTTP half.
+
+> **Implemented in Issue #110** as `src/agent/mcp/serving_client.py`, the only module in
+> `src/agent/mcp/` that reaches the serving process at all — and it does so over the wire,
+> so nothing in the package imports `src/serving/`. Its tests run against a real
+> `http.server` bound to `127.0.0.1` rather than a monkeypatched client, because a patched
+> client would pass just as happily against an in-process `create_app()` import: the one
+> thing that must never work. One refinement made while building it: a *refused connection*
+> and a *500 response* are reported differently ("the prediction service is not reachable"
+> vs. "…rejected the request (HTTP 500)"). A service that answered 500 is up, and calling
+> that unreachable would send a technician to check the wrong thing.
 
 ### The four read-only tools
 
@@ -221,6 +254,18 @@ check (Section 6) has one namespace to validate against. **The tool layer mints 
 the model**, which is what makes citation verification a string comparison rather than a
 judgement call.
 
+> **Implemented in Issue #110** as `src/agent/mcp/results.py`: `source_type` is validated
+> against the closed set above at mint time, `retrieved_at` is stamped there, and every
+> `source_id` is a module constant owned by its tool — never read from an argument, so no
+> input (including an instruction injected into a retrieved chunk or an inventory
+> `description` field) can influence what a result claims to be sourced from.
+> **One judgement call, flagged rather than made silently:** `search_documentation` queries
+> a live Qdrant service, and the five-value vocabulary has no term for a search index, so
+> its *tool-level* block uses `live_endpoint` with `source_id: "SEARCH prognos_docs"`. The
+> ids that Section 6 actually verifies citations against are unaffected — each retrieved
+> chunk carries its own `decision_doc`/`public_reference` block with its stable `chunk_id`,
+> inside `data.results`.
+
 Failures are returned as tool results with `is_error: true` and a plain-language message, not
 raised — dropping a failed tool result breaks the `tool_use`/`tool_result` pairing, and a
 raised exception gives the model nothing to degrade gracefully from. Concretely: the serving
@@ -232,6 +277,17 @@ tier-3 tests.
 response rather than continuing. This is both a cost control and a security control — Section
 10 case 7 is a question crafted to cause unbounded tool looping.
 
+> **Implemented in Issue #110** as `src/agent/mcp/budget.py`, at the **server**, so it holds
+> regardless of what connects later: every registered tool charges the budget before its
+> body runs, and the ninth call returns an `is_error` result instead of doing the work
+> (`tests/test_agent_mcp_servers.py` asserts the backing function was not reached, and that
+> a ninth `place_order` writes no ninth row). The counter is per server process, and it
+> counts across all of a server's tools rather than per tool. One implementation note the
+> agent-loop issue inherits: "per question" is realised as "per stdio session", so the
+> harness gets Section 2's semantics exactly by starting a server process per question.
+> `reset()` exists for the in-process case and is deliberately **not** exposed as a tool —
+> a model that can reset its own cap does not have one.
+
 ### Transport and SDK surface
 
 Local **stdio** MCP servers, converted for the tool runner with the SDK's own MCP helpers
@@ -240,6 +296,16 @@ project's CI pins 3.11 (`.github/workflows/notebook-ci.yml`), so that is satisfi
 is deliberately **not** the Messages API's remote `mcp_servers` connector: that connects
 Anthropic's infrastructure to a *publicly reachable URL*, and these servers are local processes
 inside a `docker compose` network with no public endpoint and no reason to have one.
+
+> **Implemented in Issue #110.** `anthropic[mcp]==0.120.2` is pinned in `requirements.txt`;
+> the extra pulls in the `mcp` package, which is both the stdio server the two servers are
+> built on (`mcp.server.MCPServer`, run with `server.run("stdio")`) and the client the
+> tier-1 tests drive real server subprocesses with. `anthropic.lib.tools.mcp`'s
+> `mcp_tool`/`async_mcp_tool` converters are the tool-runner side of the same extra and are
+> what the later agent-loop issue uses; nothing in #110 needs an API key, at import or at
+> run time. Dependency impact was verified rather than assumed, per the same check #74 and
+> #98 ran: `pip check` clean, every existing pin bit-for-bit unchanged — `anthropic` ships
+> its own `httpx2` rather than constraining `httpx`, so #84's `httpx==0.28.1` is untouched.
 
 ## 3. Vector database: Qdrant, containerized, behind an opt-in compose profile
 

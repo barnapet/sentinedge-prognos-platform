@@ -61,3 +61,17 @@ httpx==0.28.1
 # vectors from real text, not just import-checked).
 fastembed==0.8.0
 qdrant-client==1.18.0
+# Added in M7 (Issue #110): the MCP tool layer's transport (docs/agent_design.md Section
+# 2). The `[mcp]` extra is what Section 2 names -- it pulls in the `mcp` package, which
+# provides both the stdio *server* the two tool servers are built on and the client the
+# tier-1 tests drive them with, and it is the prerequisite for the
+# `anthropic.lib.tools.mcp` helpers (`mcp_tool` / `async_mcp_tool`) that convert those
+# servers' tools for the SDK tool runner when the agent loop lands. Requires Python >= 3.10;
+# CI pins 3.11 (.github/workflows/notebook-ci.yml), so that is satisfied. Verified
+# empirically on top of this file, the same check Issues #74 and #98 ran: `pip check` clean
+# and every pin above bit-for-bit unchanged (pandas 3.0.5, numpy 2.4.6, scipy 1.17.1,
+# scikit-learn 1.9.0, fastapi 0.141.1, httpx 0.28.1). Notably `anthropic` brings its own
+# `httpx2` rather than constraining `httpx`, so the M4 pin is untouched -- the MCP tools
+# themselves use the pinned `httpx` 0.28.1 to talk to the serving API. No API key is needed
+# to import or run either server; the key is only ever needed by the (later) agent loop.
+anthropic[mcp]==0.120.2
