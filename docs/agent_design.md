@@ -369,8 +369,8 @@ citation:
 
 **Two of those four are paywalled standards, and this is handled explicitly rather than
 ignored.** For any reference whose full text is not publicly redistributable, the loader
-indexes **only the bibliographic citation and the publicly published scope/abstract text, with
-its URL** — never a paraphrase of body text presented as a sourced quotation. The agent may
+indexes **only the bibliographic citation — title, edition, and URL, no Scope or abstract
+text** — never a paraphrase of body text presented as a sourced quotation. The agent may
 therefore cite ISO 15243 as *a pointer* ("the standard vocabulary for this failure class is
 defined in ISO 15243:2017 — see [URL]") and may not attribute substantive content to it. This
 is a real constraint on what those two references buy, and pretending otherwise would be the
