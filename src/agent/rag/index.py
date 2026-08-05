@@ -18,7 +18,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Iterable
 
-from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
 
@@ -88,6 +87,12 @@ def build_index(
     )
 
     if chunks:
+        # Imported here rather than at module scope (Issue #110): `fastembed` pulls in
+        # onnxruntime, ~1.4s of import time, and every importer of this module's
+        # constants -- `src/agent/rag/retrieval.py` and the MCP tool layer among them --
+        # was paying it whether or not it ever embedded anything.
+        from fastembed import TextEmbedding
+
         # `threads=1` and a small `batch_size`: measured (this issue) at ~3.1 GB resident
         # for the default single-process onnxruntime path against this corpus's ~450
         # chunks -- onnxruntime's default intra-op thread pool plus a large internal batch
