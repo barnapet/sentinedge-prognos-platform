@@ -1,0 +1,137 @@
+{
+  "recorded_at": "2026-08-06T11:13:53.079952+00:00",
+  "question": "What is the current status of bearing 2nd_test-demo, and what does this project's own documentation say about how far its predictions can be trusted?",
+  "draft_source": "synthesized_from_recorded_payloads",
+  "draft": {
+    "claims": [
+      {
+        "text": "Bearing 2nd_test-demo has been scored on 197 windows so far.",
+        "source_ids": [
+          "GET /monitoring/drift"
+        ]
+      },
+      {
+        "text": "This project's own evaluation reports the baseline's Critical recall separately per fold rather than as a cross-fold mean.",
+        "source_ids": [
+          "docs/class_imbalance_decision.md::8",
+          "docs/class_imbalance_decision.md::9",
+          "docs/model_training_decision.md::9"
+        ]
+      }
+    ],
+    "recommendation": null,
+    "unanswered": [
+      "how the bearing's drift will develop over the next week"
+    ]
+  },
+  "tool_payloads": [
+    {
+      "source": {
+        "source_type": "live_endpoint",
+        "source_id": "GET /monitoring/drift",
+        "retrieved_at": "2026-08-06T11:13:52.245022+00:00"
+      },
+      "data": {
+        "bearing_id": "2nd_test-demo",
+        "found": true,
+        "status": {
+          "file_count": 197,
+          "baseline_status": "stable",
+          "drift_status": "drifting",
+          "features": {
+            "rms": {
+              "z": 7.3704515930078935,
+              "drifting": true
+            },
+            "kurtosis": {
+              "z": 1.1256919761946387,
+              "drifting": false
+            },
+            "skewness": {
+              "z": -3.1308023473536726,
+              "drifting": true
+            },
+            "skewness_smoothed": {
+              "z": -4.386233495771536,
+              "drifting": true
+            }
+          },
+          "rms_ratio_latest": 3.931782967343288,
+          "predicted_class_counts": {
+            "Normal": 132,
+            "Degrading": 59,
+            "Critical": 6
+          }
+        }
+      }
+    },
+    {
+      "source": {
+        "source_type": "live_endpoint",
+        "source_id": "SEARCH prognos_docs",
+        "retrieved_at": "2026-08-06T11:13:52.660291+00:00"
+      },
+      "data": {
+        "query": "Critical recall on 1st_test held-out fold",
+        "result_count": 3,
+        "results": [
+          {
+            "source": {
+              "source_type": "decision_doc",
+              "source_id": "docs/class_imbalance_decision.md::8",
+              "source_ref": "docs/class_imbalance_decision.md"
+            },
+            "heading_path": "class_imbalance_decision.md > 4. The `1st_test` fold is unstable, and not because of class imbalance",
+            "score": 0.7930768,
+            "text": "high-RMS region of the training distribution. A diagnostic run with the raw `rms` column\ndropped more than doubles that fold's macro-F1 (0.192 \u2192 0.493), confirming the mechanism.\n\nTwo consequences, both deliberately left open here:\n\n- **`1st_test`'s `Critical` recall is not an informative comparison signal.** It is 1\u20133\n  rows out of 17, on a fold where the model's whole decision boundary is displaced. No\n  arm's ranking should rest on it, and none in Section 5 does.\n- ~~**This is a feature-selection problem for Step 4, not a class-imbalance problem.**~~ \u2014\n  **superseded**, Issue #72: it is *two* independent problems, not one, and only the first is\n  a feature-selection problem. `docs/model_training_decision.md` \u00a73 decomposes them \u2014 the\n  raw-`rms` amplitude-scale mismatch diagnosed above *is* fixable by dropping the column\n  (confirmed: `Normal` recall recovers 0.074 \u2192 0.659), but a second, independent failure is\n  not: all 17 of `1st_test`'s `Critical` rows sit below the lowest `rms_ratio` its training\n  fold ever labelled `Critical`, which is a property of how `critical_multiple` is derived\n"
+          },
+          {
+            "source": {
+              "source_type": "decision_doc",
+              "source_id": "docs/class_imbalance_decision.md::9",
+              "source_ref": "docs/class_imbalance_decision.md"
+            },
+            "heading_path": "class_imbalance_decision.md > 4. The `1st_test` fold is unstable, and not because of class imbalance",
+            "score": 0.791786,
+            "text": "  (confirmed: `Normal` recall recovers 0.074 \u2192 0.659), but a second, independent failure is\n  not: all 17 of `1st_test`'s `Critical` rows sit below the lowest `rms_ratio` its training\n  fold ever labelled `Critical`, which is a property of how `critical_multiple` is derived\n  per experiment and is unreachable by any feature selection, scaling, or model choice. No\n  weighting or resampling scheme fixes either. `docs/eda_findings.md` \u00a72 already documents\n  `1st_test`'s inner-race failure as impulsive (kurtosis-led) rather than amplitude-led,\n  which is the physical reason its RMS distribution sits where it does \u2014 that diagnosis was\n  correct and is what #72 built on. This remains the failure-mode-dependent weakness\n  `docs/evaluation_protocol.md` \u00a75 warned must be stated rather than averaged away.\n\n"
+          },
+          {
+            "source": {
+              "source_type": "decision_doc",
+              "source_id": "docs/model_training_decision.md::9",
+              "source_ref": "docs/model_training_decision.md"
+            },
+            "heading_path": "model_training_decision.md > 3. The `1st_test` fold: two stacked failures, not one",
+            "score": 0.79019237,
+            "text": "\n`docs/class_imbalance_decision.md` \u00a74 diagnosed one cause (raw-`rms` amplitude scale) and\nhanded it forward. Decomposing the fold shows the scale problem is real but accounts for\nonly half of what goes wrong, and the two halves damage *different classes*.\n\nHolding everything else fixed and removing only raw `rms`:\n\n| `1st_test`, held out | `Normal` recall | `Critical` recall | Macro-F1 |\n|---|---|---|---|\n| `full` | 0.074 | 0.059 | 0.152 |\n| `no_raw_rms` | **0.659** | **0.000** | 0.401 |\n\n"
+          }
+        ]
+      }
+    },
+    {
+      "source": {
+        "source_type": "inventory",
+        "source_id": "data/agent/inventory.db",
+        "retrieved_at": "2026-08-06T11:13:52.662794+00:00"
+      },
+      "data": {
+        "query": {
+          "part_number": "ZA-2115",
+          "bearing_type": null
+        },
+        "match_count": 1,
+        "parts": [
+          {
+            "part_number": "ZA-2115",
+            "description": "Rexnord ZA-2115 double-row bearing (IMS test rig bearing type)",
+            "bearing_type": "double-row cylindrical roller",
+            "quantity_on_hand": 4,
+            "unit_price_usd": 850.0,
+            "lead_time_days": 21,
+            "location": "Warehouse A - Shelf 12"
+          }
+        ]
+      }
+    }
+  ]
+}
