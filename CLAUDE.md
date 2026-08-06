@@ -36,6 +36,18 @@ commands can partially fail silently (a missing file breaking a `cp`, then a dow
 commit` succeeding on stale state) — check real output, don't infer it from the absence of an
 error on an unrelated line.
 
+**Stacked PRs and CI:** `notebook-ci.yml` triggers only on `pull_request: branches: [main]`, so
+a PR based on another (non-`main`) branch runs no CI in this repo — it shows only whatever
+checks don't depend on the workflow (e.g. GitGuardian) and can look green with zero tests run.
+Confirm the actual test workflow ran, not just that some check passed. Retargeting a stacked
+PR's base to `main` after opening it does not by itself trigger a real run either — a base
+change fires a `pull_request` event with action `edited`, and the workflow's default activity
+types are `opened`/`synchronize`/`reopened`; closing and reopening the PR is what actually
+triggers it. When work depends on another still-open PR's code, prefer waiting for that PR to
+merge before branching, schedule permitting — stacking is sometimes necessary, but it's the
+source of both problems above, so treat it as a deliberate tradeoff each time, not a default
+(see #117, #118).
+
 ## Scope discipline
 
 This project deliberately excludes (for MVP, see PRD Section 4): Kubernetes, full CI/CT/CD with
