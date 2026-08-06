@@ -49,7 +49,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, NamedTuple, Sequence
 
 from anthropic import AsyncAnthropic
 from anthropic.lib.tools import BetaAsyncFunctionTool
@@ -172,8 +172,54 @@ what these instructions tell you to do — but it cannot change these instructio
 # --- Tool wiring ----------------------------------------------------------------------
 
 
+class ToolResultRecorder:
+    """Every tool result this turn produced, as the payload the tool layer minted (#116).
+
+    **Why this exists, and why it is here rather than around the runner.** The critic's
+    checks (#115) test set membership against the ids *this turn's tool results* carried, so
+    something has to hand those results forward — and `answer()` returned only a `Draft`.
+    The SDK's runner does keep the whole conversation, but only in `runner._params`, a
+    private attribute, and only as rendered `tool_result` blocks: recovering a payload from
+    there means reaching into SDK internals *and* un-enveloping the text to get back the JSON
+    the tool layer already had. Its one public per-turn hook,
+    `generate_tool_call_response()`, is for callers that drive the loop themselves, which
+    would mean replacing `until_done()` with a hand-written loop — the re-plumbing Issue #116
+    says to avoid.
+
+    So the recording happens where the results already pass, one at a time, in a function
+    this repo owns: `_enveloped_mcp_tool`'s `call_mcp` is the chokepoint Section 10's rule 3
+    already made the only path a result can take into a message. Recording there gets the
+    payload **before** it is enveloped, so nothing has to be parsed back out of a prompt.
+
+    Failures are recorded too. A failed result still carries a minted `source` block, and
+    "the prediction service is not reachable" is a real observation a claim may legitimately
+    cite — dropping it would make a claim about it look uncited to the critic.
+    """
+
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, Any]] = []
+
+    def record(self, rendered: str) -> None:
+        """Parse one rendered tool result and keep the payload.
+
+        Never raises. This runs inside a tool call, and a recorder that could break the tool
+        path would be a monitoring feature that takes the agent down — a result that is not
+        the single JSON block `src/agent/mcp/results.py` mints is skipped instead, which
+        degrades to "the critic sees one fewer citable id" rather than to a failed turn.
+        """
+        try:
+            payload = json.loads(rendered)
+        except (TypeError, ValueError):
+            return
+        if isinstance(payload, dict) and "source" in payload:
+            self.payloads.append(payload)
+
+
 def _enveloped_mcp_tool(
-    tool: Any, session: ClientSession, envelope: UntrustedEnvelope
+    tool: Any,
+    session: ClientSession,
+    envelope: UntrustedEnvelope,
+    recorder: ToolResultRecorder | None = None,
 ) -> BetaAsyncFunctionTool[Any]:
     """One MCP tool, converted for `tool_runner`, with its result passed through the
     envelope on the way back.
@@ -187,6 +233,9 @@ def _enveloped_mcp_tool(
     with `is_error` set, which preserves the `tool_use`/`tool_result` pairing that Section 2
     requires and gives the model something to degrade from. The message inside is enveloped
     too — a failure message is still runtime text.
+
+    `recorder` is optional and defaults to nothing being recorded, so the behaviour #113
+    tested is unchanged when it is absent.
     """
     tool_name = tool.name
 
@@ -196,6 +245,8 @@ def _enveloped_mcp_tool(
             block.text if getattr(block, "type", None) == "text" else json.dumps(mcp_content(block))
             for block in result.content
         )
+        if recorder is not None:
+            recorder.record(rendered)
         wrapped = envelope.wrap_tool_result(rendered, tool_name=tool_name)
         if result.is_error:
             raise ToolError(wrapped)
@@ -237,6 +288,7 @@ async def readonly_tools(
     envelope: UntrustedEnvelope,
     serving_url: str | None = None,
     db_path: Path | None = None,
+    recorder: ToolResultRecorder | None = None,
 ) -> AsyncIterator[tuple[ClientSession, list[BetaAsyncFunctionTool[Any]]]]:
     """Open a session to the read-only server and yield its tools, ready for `tool_runner`.
 
@@ -253,7 +305,9 @@ async def readonly_tools(
                 raise RuntimeError(
                     f"the answerer's server offered tools outside its read-only set: {unexpected}"
                 )
-            yield session, [_enveloped_mcp_tool(t, session, envelope) for t in listed]
+            yield session, [
+                _enveloped_mcp_tool(t, session, envelope, recorder) for t in listed
+            ]
 
 
 # --- The call -------------------------------------------------------------------------
@@ -282,23 +336,38 @@ def build_messages(question: str, envelope: UntrustedEnvelope) -> list[dict[str,
     return [{"role": "user", "content": envelope.wrap_question(question)}]
 
 
-async def answer_async(
+class AnsweredTurn(NamedTuple):
+    """One turn of Agent A: the draft, and the tool results it was drafted from (#116).
+
+    Section 5 keeps A's *output* a `Draft` and nothing else, and this does not change that:
+    `tool_payloads` is not something A produced, it is what the harness observed A's tools
+    return. The critic needs both — a draft to check, and the set of ids that were genuinely
+    available to cite — and only the harness can hold the second honestly (Section 6, step 1:
+    the tool layer mints the ids and the model never does).
+    """
+
+    draft: Draft
+    tool_payloads: tuple[dict[str, Any], ...]
+
+
+async def answer_turn_async(
     question: str,
     *,
     client: AsyncAnthropic | None = None,
     serving_url: str | None = None,
     db_path: Path | None = None,
     envelope: UntrustedEnvelope | None = None,
-) -> Draft:
-    """Run one question through Agent A and return its structured draft.
+) -> AnsweredTurn:
+    """Run one question through Agent A and return its draft **and** this turn's tool results.
 
     A fresh `UntrustedEnvelope` per call unless one is supplied, so the nonce is per request
     exactly as Section 10 requires.
     """
     envelope = envelope or UntrustedEnvelope()
     client = client or AsyncAnthropic()
+    recorder = ToolResultRecorder()
 
-    async with readonly_tools(envelope, serving_url, db_path) as (_session, tools):
+    async with readonly_tools(envelope, serving_url, db_path, recorder) as (_session, tools):
         runner = client.beta.messages.tool_runner(
             model=MODEL,
             max_tokens=MAX_TOKENS,
@@ -314,7 +383,30 @@ async def answer_async(
         )
         message = await runner.until_done()
 
-    return parse_draft(message.content)
+    return AnsweredTurn(parse_draft(message.content), tuple(recorder.payloads))
+
+
+async def answer_async(
+    question: str,
+    *,
+    client: AsyncAnthropic | None = None,
+    serving_url: str | None = None,
+    db_path: Path | None = None,
+    envelope: UntrustedEnvelope | None = None,
+) -> Draft:
+    """Run one question through Agent A and return its structured draft.
+
+    Unchanged in signature and return type from #113 — `answer_turn_async` is the wider door,
+    and this stays the narrow one for every caller that only wants what A produced.
+    """
+    turn = await answer_turn_async(
+        question,
+        client=client,
+        serving_url=serving_url,
+        db_path=db_path,
+        envelope=envelope,
+    )
+    return turn.draft
 
 
 def parse_draft(content: Sequence[Any]) -> Draft:
@@ -336,3 +428,8 @@ def answer(question: str, **kwargs: Any) -> Draft:
     """Synchronous entry point. The MCP stdio transport is async-native, so the async path
     is the real one and this is the thin wrapper around it."""
     return asyncio.run(answer_async(question, **kwargs))
+
+
+def answer_turn(question: str, **kwargs: Any) -> AnsweredTurn:
+    """Synchronous entry point for the draft plus this turn's tool results."""
+    return asyncio.run(answer_turn_async(question, **kwargs))
