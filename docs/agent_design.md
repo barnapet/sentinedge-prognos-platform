@@ -777,6 +777,29 @@ wrong is highest), or (b) a claim's lexical overlap with its cited chunk falls b
 the signal that the deterministic layer cannot tell entailment from coincidence. On a typical
 documentation question, neither fires and the critic costs nothing.
 
+> **Clarified in Issue #119, from a measurement in #117: trigger (b) applies to
+> chunk-cited claims specifically.** The wording above is "overlap with its cited *chunk*",
+> and a chunk is prose — `decision_doc` or `public_reference`. Issue #114 applied it to every
+> cited source instead, including `live_endpoint` and `inventory` results, whose text is the
+> JSON serialization of their `data`. Comparing an English sentence against JSON keys scores
+> low no matter how well-supported the claim is: on #117's recorded turn, *"Bearing
+> 2nd_test-demo has been scored on 197 windows so far."* scored **0.333** against the very
+> payload containing `"file_count": 197`, and escalated. So the trigger now reads prose
+> chunks only, with three consequences: a claim citing **only** live-tool or inventory
+> sources has no overlap check run against it at all — not checked-and-passed, *not
+> evaluated* — leaving trigger (a) as the only thing that can escalate it; a claim citing
+> **both** kinds is measured against its prose sources only, so a high-scoring JSON payload
+> can neither trigger escalation nor mask a prose chunk that falls below the floor; and
+> trigger (a) still considers every cited source when choosing which passage to put to the
+> critic, since the scoping is to the overlap *measure*, not to what a recommendation is
+> worth checking against. Such a claim is not left unchecked — citation existence and numeric
+> fidelity still run against the tool result's own JSON, which is where a claim about live
+> data is actually falsifiable. **The floor's value is unchanged at 0.6**: #119 fixed what is
+> compared, not the number it is compared against, and #117's second finding — that 0.6 looks
+> high even against real prose, where a claim summarizing a chunk in its own words scored
+> 0.417 — stays with Section 8's golden-set calibration, which now has real measurements to
+> work from.
+
 **What the LLM critic is asked** is narrow and closed: *"Does chunk S support claim C?
 yes / no / unclear."* One claim, one chunk, no question, no draft framing, no conversation. It
 is not asked "is this a good answer" — a broad quality judgement is where LLM critics are least

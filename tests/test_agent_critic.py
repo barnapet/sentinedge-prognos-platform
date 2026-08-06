@@ -49,6 +49,7 @@ from src.agent.critic.escalation import (
     LEXICAL_OVERLAP_FLOOR,
     MAX_TOKENS,
     MODEL,
+    PROSE_SOURCE_TYPES,
     SYSTEM_PROMPT,
     THINKING,
     VERDICTS,
@@ -105,12 +106,29 @@ OTHER_CHUNK_TEXT = (
 
 
 def evidence(*, scores: tuple[float, float] = (0.62, 0.41)) -> TurnEvidence:
-    """Two retrieved chunks, both citable, with retrieval that clears the thresholds."""
+    """Two retrieved chunks, both citable, with retrieval that clears the thresholds.
+
+    Both carry `source_type="decision_doc"`, which is what the tool layer mints for a chunk
+    retrieved from a `docs/` file (Section 2's vocabulary) and therefore what
+    `from_tool_payloads` puts on a real one. It is not decoration: Issue #119 scopes the
+    escalation's overlap check to prose chunks, so an evidence item that omits its type is a
+    fixture that no longer represents a retrieved chunk.
+    """
     return TurnEvidence(
         (
-            EvidenceItem(CHUNK_ID, CHUNK_TEXT, score=scores[0], title="model_training_decision"),
             EvidenceItem(
-                OTHER_CHUNK_ID, OTHER_CHUNK_TEXT, score=scores[1], title="serving_design"
+                CHUNK_ID,
+                CHUNK_TEXT,
+                score=scores[0],
+                title="model_training_decision",
+                source_type="decision_doc",
+            ),
+            EvidenceItem(
+                OTHER_CHUNK_ID,
+                OTHER_CHUNK_TEXT,
+                score=scores[1],
+                title="serving_design",
+                source_type="decision_doc",
             ),
         )
     )
@@ -606,6 +624,144 @@ def test_the_escalated_pair_is_the_best_matching_cited_chunk():
     (request,) = escalations_needed(one, report, evidence())
 
     assert request.source_id == OTHER_CHUNK_ID
+
+
+# --- Issue #119: trigger (b) is scoped to prose chunks ------------------------------------
+#
+# A live-tool result as `TurnEvidence` actually renders it: the text is the JSON
+# serialization of `data`, which is why an English claim scores low against it however well
+# the payload supports the claim.
+LIVE_ID = "GET /monitoring/drift"
+LIVE_TEXT = json.dumps(
+    {"bearing_id": "2nd_test-demo", "file_count": 197, "baseline_status": "stable"},
+    indent=2,
+    sort_keys=True,
+)
+LIVE_CLAIM = Claim(
+    text="Bearing 2nd_test-demo has been scored on 197 windows so far.",
+    source_ids=[LIVE_ID],
+)
+
+
+def live_evidence() -> TurnEvidence:
+    return TurnEvidence(
+        (EvidenceItem(LIVE_ID, LIVE_TEXT, source_type="live_endpoint"),)
+    )
+
+
+def test_prose_source_types_are_section_2s_two_chunk_categories():
+    assert PROSE_SOURCE_TYPES == {"decision_doc", "public_reference"}
+
+
+def test_a_claim_citing_only_live_tool_json_is_not_overlap_checked_at_all():
+    """Issue #119's core correction, on #117's own measured shape. The claim is supported by
+    the payload it cites — `file_count` really is 197 — and scores far below the floor
+    because prose is being compared against JSON keys. Trigger (b) must not fire."""
+    one = draft(LIVE_CLAIM)
+    report = verify(one, live_evidence())
+
+    assert report.clean is True
+    assert lexical_overlap(LIVE_CLAIM.text, LIVE_TEXT) < LEXICAL_OVERLAP_FLOOR, (
+        "the overlap really is below the floor — the fix is that it is not consulted"
+    )
+    assert escalations_needed(one, report, live_evidence()) == ()
+
+
+def test_trigger_a_still_escalates_a_live_only_claim():
+    """The documented consequence of the above: trigger (a) remains available. A live-cited
+    claim in a draft carrying a recommendation is still put to the critic, against the JSON
+    it cites — scoping applies to the overlap measure, not to what (a) may check."""
+    one = draft(LIVE_CLAIM, recommendation="Order 1 x ZA-2115.")
+    report = verify(one, live_evidence())
+
+    (request,) = escalations_needed(one, report, live_evidence())
+
+    assert request.trigger == "recommendation"
+    assert request.source_id == LIVE_ID
+
+
+def test_a_mixed_claim_is_measured_against_its_prose_source_only():
+    """Rule 2: the JSON source is ignored for this check. Here the prose chunk is below the
+    floor and the JSON scores higher — the claim must still escalate, because a high-scoring
+    payload may not mask a prose chunk that falls below the floor."""
+    mixed = Claim(
+        text="Inner-race defects propagate faster than outer-race defects.",
+        source_ids=[LIVE_ID, CHUNK_ID],
+    )
+    combined = TurnEvidence(evidence().items + live_evidence().items)
+    one = draft(mixed)
+    report = verify(one, combined)
+
+    (request,) = escalations_needed(one, report, combined)
+
+    assert request.trigger == "lexical_overlap"
+    assert request.source_id == CHUNK_ID, "measured against the prose chunk, not the JSON"
+
+
+def test_a_live_source_cannot_trigger_escalation_for_a_well_supported_prose_claim():
+    """The same rule in the other direction: a claim whose prose chunk clears the floor is
+    not dragged below it by a low-scoring JSON source it also cites. Before #119 the best
+    pair was taken across every cited source, so this depended on which scored higher."""
+    supported = Claim(
+        text="Critical recall is 0.059 on 1st_test.", source_ids=[CHUNK_ID, LIVE_ID]
+    )
+    combined = TurnEvidence(evidence().items + live_evidence().items)
+    one = draft(supported)
+    report = verify(one, combined)
+
+    assert lexical_overlap(supported.text, CHUNK_TEXT) >= LEXICAL_OVERLAP_FLOOR
+    assert escalations_needed(one, report, combined) == ()
+
+
+def test_the_floor_itself_is_unchanged_by_this_issue():
+    """#119 fixes what is compared, not the number compared against. Section 8's golden set
+    owns the value."""
+    assert LEXICAL_OVERLAP_FLOOR == 0.6
+
+
+def test_evidence_without_a_source_type_is_not_treated_as_prose():
+    """Pinned because it is a real edge, not because it happens in production:
+    `from_tool_payloads` always carries a type, and Section 2 makes `source_type` mandatory
+    on every minted result. Hand-built evidence that omits it is not prose by the literal
+    reading of the rule — recorded here so the behaviour is a decision rather than a
+    surprise."""
+    untyped = TurnEvidence((EvidenceItem(CHUNK_ID, CHUNK_TEXT),))
+    coincidental = Claim(
+        text="Inner-race defects propagate faster than outer-race defects.",
+        source_ids=[CHUNK_ID],
+    )
+    one = draft(coincidental)
+
+    assert escalations_needed(one, verify(one, untyped), untyped) == ()
+
+
+def test_source_type_survives_from_tool_payloads_at_both_levels():
+    """The datum the scoping depends on is carried, not re-derived from the id's shape."""
+    payloads = [
+        {
+            "source": {"source_type": "live_endpoint", "source_id": "SEARCH prognos_docs"},
+            "data": {
+                "results": [
+                    {
+                        "source": {
+                            "source_type": "decision_doc",
+                            "source_id": CHUNK_ID,
+                            "source_ref": "docs/model_training_decision.md",
+                        },
+                        "text": CHUNK_TEXT,
+                        "score": 0.79,
+                    }
+                ]
+            },
+        }
+    ]
+
+    built = TurnEvidence.from_tool_payloads(payloads)
+
+    assert [(item.source_id, item.source_type) for item in built.items] == [
+        ("SEARCH prognos_docs", "live_endpoint"),
+        (CHUNK_ID, "decision_doc"),
+    ]
 
 
 # --- The escalated call, against a recording stub -----------------------------------------
