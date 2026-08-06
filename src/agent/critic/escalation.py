@@ -22,6 +22,12 @@ below `LEXICAL_OVERLAP_FLOOR`, the signal that the deterministic layer cannot te
 from coincidence. On a typical documentation question neither fires and the critic costs
 nothing.
 
+**Trigger (b) reads prose chunks only** (`PROSE_SOURCE_TYPES`, Issue #119). "Lexical overlap
+with its cited chunk" is a measure over prose, and a `live_endpoint`/`inventory` result's
+text is serialized JSON; #117 measured a perfectly-supported claim scoring 0.333 against the
+payload that supports it. A claim citing no prose at all is not overlap-checked -- see
+`escalations_needed` for what that means for it.
+
 **The honest limitation, restated because it does not go away:** a critic drawn from the same
 model family as the answerer shares its blind spots. It is mitigated here -- different system
 prompt, no sight of the question or the draft's framing, one claim at a time -- and it is not
@@ -82,6 +88,21 @@ VERDICTS = ("yes", "no", "unclear")
 # it"). Set lower and the escalation never fires on real drafts; set at 1.0 and it fires on
 # every claim, which is the LLM-only design Section 6 rejects on cost and determinism.
 LEXICAL_OVERLAP_FLOOR = 0.6
+
+# --- What trigger (b) is allowed to look at (Issue #119) --------------------------------
+#
+# Section 6 words trigger (b) as "a claim's lexical overlap with **its cited chunk**", and a
+# chunk is prose: `decision_doc` and `public_reference` are the two `source_type`s Section 4's
+# loaders mint for retrieved text. A `live_endpoint` or `inventory` result is not a chunk --
+# `TurnEvidence` renders its text as `json.dumps(data)` -- so measuring an English sentence
+# against it compares prose to JSON keys and scores low however well the claim is supported.
+#
+# That is measured, not supposed. Issue #117 recorded a real turn in which the claim "Bearing
+# 2nd_test-demo has been scored on 197 windows so far." scored 0.333 against the very payload
+# that contains `"file_count": 197` -- perfectly supported, and escalated anyway. Applying a
+# prose measure to non-prose was the defect; the floor's *value* was not, and #119 leaves it
+# at 0.6 for Section 8's golden set to calibrate.
+PROSE_SOURCE_TYPES = frozenset({"decision_doc", "public_reference"})
 
 # Function words carry no evidence about subject matter and are present in every chunk, so
 # leaving them in would inflate every overlap toward 1.0 and make the floor unreachable. A
@@ -210,21 +231,34 @@ class EscalationRequest:
 
 
 def _best_supported_pair(
-    claim_text: str, source_ids: Sequence[str], evidence: TurnEvidence
+    claim_text: str,
+    source_ids: Sequence[str],
+    evidence: TurnEvidence,
+    *,
+    source_types: frozenset[str] | None = None,
 ) -> tuple[str, str, float] | None:
-    """The cited chunk with the highest overlap, and that overlap.
+    """The cited source with the highest overlap, and that overlap.
 
     The *best* rather than the worst on purpose: escalation asks whether anything the claim
     cites supports it, so the pair worth spending a model call on is the one most likely to
     say yes. If the best-matching cited chunk does not support the claim, none of the others
     will either.
+
+    `source_types` restricts which cited sources are eligible. Passing
+    `PROSE_SOURCE_TYPES` is what scopes trigger (b) to real chunks (Issue #119); passing
+    nothing considers every cited source, which is what trigger (a) wants -- a
+    recommendation is worth checking against the best passage of any kind the claim cites.
     """
     best: tuple[str, str, float] | None = None
     for source_id in source_ids:
-        for text in evidence.texts_for(source_id):
-            overlap = lexical_overlap(claim_text, text)
+        for item in evidence.items:
+            if item.source_id != source_id:
+                continue
+            if source_types is not None and item.source_type not in source_types:
+                continue
+            overlap = lexical_overlap(claim_text, item.text)
             if best is None or overlap > best[2]:
-                best = (source_id, text, overlap)
+                best = (source_id, item.text, overlap)
     return best
 
 
@@ -241,6 +275,26 @@ def escalations_needed(
     a precondition, not a preference. A draft with a failing check is already being degraded
     by the layer that does not share the answerer's blind spots; paying for a model call to
     re-examine it would add cost and non-determinism to a decision that is already made.
+
+    **Trigger (b) is evaluated only against prose chunks** (`PROSE_SOURCE_TYPES`), which is
+    Issue #119's correction to #114. Three consequences, stated rather than left to be
+    inferred from the control flow:
+
+    - **A claim citing only `live_endpoint`/`inventory` sources has no overlap check run
+      against it at all.** Not "checked and passed" -- *not evaluated*. Trigger (a), a
+      `recommendation` being present on the draft, is then the only thing that can escalate
+      that claim, and if the draft carries no recommendation the claim is released on the
+      deterministic checks alone. Those checks are not weak for such a claim: citation
+      existence and numeric fidelity both run against the tool result's own JSON, which is
+      where a claim about live data is actually falsifiable.
+    - **For a claim citing both prose and live-tool sources, the overlap runs against the
+      prose source(s) only**, and the live-tool source is ignored *for this check*. It
+      therefore can neither trigger escalation nor suppress it -- a high-scoring JSON payload
+      cannot mask a prose chunk that falls below the floor, which is the same defect in the
+      opposite direction.
+    - **Trigger (a) still considers every cited source**, prose or not, when choosing the
+      passage to put to the critic. Scoping applies to the overlap *measure*, not to what a
+      recommendation is worth checking against.
     """
     if not report.clean:
         return ()
@@ -248,15 +302,18 @@ def escalations_needed(
     recommended = draft.recommendation is not None
     requests: list[EscalationRequest] = []
     for checked in report.verified:
-        pair = _best_supported_pair(
-            checked.claim.text, cited_source_ids(checked.claim), evidence
+        cited = cited_source_ids(checked.claim)
+        prose_pair = _best_supported_pair(
+            checked.claim.text, cited, evidence, source_types=PROSE_SOURCE_TYPES
         )
-        if pair is None:
-            continue
-        source_id, chunk_text, overlap = pair
-        if overlap < floor:
+        if prose_pair is not None and prose_pair[2] < floor:
+            source_id, chunk_text, overlap = prose_pair
             trigger = "lexical_overlap"
         elif recommended:
+            pair = _best_supported_pair(checked.claim.text, cited, evidence)
+            if pair is None:
+                continue
+            source_id, chunk_text, overlap = pair
             trigger = "recommendation"
         else:
             continue

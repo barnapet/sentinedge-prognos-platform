@@ -82,12 +82,22 @@ _QUANTITY = re.compile(
 @dataclass(frozen=True)
 class EvidenceItem:
     """One citable thing this turn produced: an id, the text behind it, and -- for a
-    retrieved chunk -- the similarity that retrieved it and a title to point at."""
+    retrieved chunk -- the similarity that retrieved it and a title to point at.
+
+    `source_type` is Section 2's minted category (`live_endpoint`, `decision_doc`,
+    `public_reference`, `inventory`, `trajectory_match`), carried through rather than
+    re-derived: `escalation.py` needs to tell a prose chunk from a tool result's JSON
+    (Issue #119), and the tool layer already decided which is which at mint time. None of
+    the four checks in this module read it -- it is carried, not used here. It is last and
+    defaulted so existing positional construction keeps working, and `""` is the honest
+    value for evidence assembled without one rather than a guess at a category.
+    """
 
     source_id: str
     text: str
     score: float | None = None
     title: str = ""
+    source_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,7 +173,13 @@ class TurnEvidence:
                     if "error" in payload
                     else json.dumps(data, indent=2, default=str, sort_keys=True)
                 )
-                items.append(EvidenceItem(source_id=str(source_id), text=text))
+                items.append(
+                    EvidenceItem(
+                        source_id=str(source_id),
+                        text=text,
+                        source_type=str(source.get("source_type", "")),
+                    )
+                )
             for result in (data or {}).get("results", []) if isinstance(data, dict) else []:
                 chunk_source = result.get("source") or {}
                 chunk_id = chunk_source.get("source_id")
@@ -179,6 +195,7 @@ class TurnEvidence:
                             float(result["score"]) if result.get("score") is not None else None
                         ),
                         title=" — ".join(part for part in (ref, heading) if part),
+                        source_type=str(chunk_source.get("source_type", "")),
                     )
                 )
         return cls(tuple(items))

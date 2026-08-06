@@ -30,7 +30,8 @@ from pathlib import Path
 import pytest
 
 from src.agent.answerer import Draft, ToolResultRecorder, readonly_tools
-from src.agent.critic.deterministic import TurnEvidence
+from src.agent.critic.deterministic import TurnEvidence, verify
+from src.agent.critic.escalation import escalations_needed
 from src.agent.critic.grounding import GROUNDED, PARTIAL, TIERS, UNGROUNDED
 from src.agent.critic.retrieval_confidence import TAU_TOP
 from src.agent.inventory.build_db import build_db
@@ -135,6 +136,46 @@ def test_every_citation_in_the_recorded_draft_resolves_to_a_recorded_id(recorded
     cited = {sid for claim in recorded_turn.draft.claims for sid in claim.source_ids}
     assert cited, "the recorded draft cites nothing"
     assert cited <= evidence.source_ids
+
+
+def test_issue_119s_scoping_on_the_recorded_turns_own_measurements(recorded_turn):
+    """Issue #119, measured on #117's recorded turn rather than on a built example.
+
+    #117 reported trigger (b) firing on 100% of claims, with these four (claim, source)
+    overlaps against an unchanged floor of 0.6. Every number below is #117's, re-measured;
+    what changed is which of them the trigger is allowed to consult.
+    """
+    from src.agent.critic.escalation import PROSE_SOURCE_TYPES, lexical_overlap
+
+    evidence = evidence_for(recorded_turn)
+    by_id = {item.source_id: item for item in evidence.items}
+    measured = {
+        (index, sid): (by_id[sid].source_type, round(lexical_overlap(claim.text, by_id[sid].text), 3))
+        for index, claim in enumerate(recorded_turn.draft.claims)
+        for sid in claim.source_ids
+    }
+
+    assert measured == {
+        (0, "GET /monitoring/drift"): ("live_endpoint", 0.333),
+        (1, "docs/class_imbalance_decision.md::8"): ("decision_doc", 0.25),
+        (1, "docs/class_imbalance_decision.md::9"): ("decision_doc", 0.417),
+        (1, "docs/model_training_decision.md::9"): ("decision_doc", 0.25),
+    }, "#117's measured table, unchanged — this issue does not move any overlap"
+
+    # Claim 0 cites only live-tool JSON, and `"file_count": 197` supports it exactly.
+    assert PROSE_SOURCE_TYPES.isdisjoint(
+        {by_id[sid].source_type for sid in recorded_turn.draft.claims[0].source_ids}
+    )
+    # Claim 1 cites prose, and its best chunk is still below the unchanged floor.
+    assert recorded_turn.draft.recommendation is None, "so only trigger (b) is in play here"
+
+    report = verify(recorded_turn.draft, evidence)
+    requests = escalations_needed(recorded_turn.draft, report, evidence)
+
+    assert report.clean is True
+    assert [(r.claim_index, r.trigger, r.source_id) for r in requests] == [
+        (1, "lexical_overlap", "docs/class_imbalance_decision.md::9")
+    ], "the JSON-cited claim no longer escalates; the prose-cited one still does"
 
 
 # --- 2. The answerer's recorder, against a real MCP server subprocess ---------------------
