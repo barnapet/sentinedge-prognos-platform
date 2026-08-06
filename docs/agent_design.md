@@ -975,6 +975,28 @@ needs a key that CI does not hold. The compensating rule is procedural and must 
 is not quietly skipped: **no change to a prompt, a tool description, or the model may merge
 without a recorded golden-set run in its PR.**
 
+> **Record-and-replay, added by Issue #122** (`tests/fixtures/cassette.py`). The two existing
+> live tests (`test_agent_answerer_live.py`, `test_agent_pipeline_live.py`) source their model
+> calls from a committed cassette by default: one real recording per test, replayed at the
+> httpx transport with no API key, no network call and no cost. That moves them from "skipped
+> on every PR for lack of a key" onto tier 1's always-runs side — everything except the model's
+> HTTP conversation stays real, including the uvicorn process, the MCP subprocess and the tool
+> calls `tool_runner` makes in response to the recorded `tool_use` blocks. `pytest --record`
+> refreshes a cassette against the live API; `--cassette-mode live` hits it without writing.
+>
+> **This does not move tier 2 onto the always-runs side, and must not be read as doing so.** A
+> replay cannot detect a capability regression — it returns the answer the model gave on the
+> recording date, so the thing the golden set exists to measure is precisely what a replay
+> stops measuring. What it does do is make the procedural rule above mechanical rather than
+> remembered: each cassette carries a hash of the prompts, schemas and request configuration it
+> was recorded against, and a replay **fails** naming what changed if any of them moved. A
+> prompt change therefore cannot merge with a stale recording still in the tree.
+>
+> The recordings are deliberately made with Qdrant down, matching CI. Recording with the
+> documentation index up would bake chunk ids into the recorded draft that CI's evidence set
+> cannot contain; the reverse direction is harmless, so replaying on a machine that has Qdrant
+> is fine. Each cassette's `notes` carries the probed state rather than an assumed one.
+
 ### Tier 3 — workflow: the whole chain, including the error and retry branches
 
 **Covers, with assertions on observable state rather than on model prose:**
