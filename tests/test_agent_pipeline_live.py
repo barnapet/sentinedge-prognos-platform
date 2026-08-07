@@ -1,4 +1,4 @@
-"""The one live call through the whole A → B pipeline (Issue #116).
+"""The one recorded call through the whole A → B pipeline (Issue #116).
 
 **This is not Section 8's golden set**, which is a separate, later issue, and it is not
 evidence that the agent answers well. It exists to show, once, against real infrastructure,
@@ -8,25 +8,46 @@ a real model call for the answerer, and a real escalated critic call if Section 
 fires. Everything else about the pipeline is asserted without a model in
 `tests/test_agent_pipeline.py`, where it cannot flake.
 
-**Running this is also how the tier-1 fixture gets its model half.**
-`tests/fixtures/answerer_turn.json` currently carries recorded-for-real `tool_payloads` and a
-draft synthesized from them, because no credentials were available when it was written.
+**Both model calls are replayed from a committed cassette by default (Issue #122)** — the
+answerer's and, when Section 6's escalation rule fires, the critic's, from the one cassette,
+since they are one conversation with the API from the transport's point of view. The test now
+runs on every PR in ordinary CI with no API key, no network access and no cost, where before
+it skipped. Everything else is still real, including the tool calls `tool_runner` makes in
+response to the recorded `tool_use` blocks and the deterministic critic, which never called a
+model in the first place.
+
+**What a replay stops proving**: that the model would choose these tools and write this draft
+today. It still proves that a real turn's evidence set contains every id the released claims
+cite — the assertion below is against ids the *harness* recorded from this run's own tool
+calls, not against anything in the cassette.
+
+**When to re-record.** Deliberately, not routinely — after a change to either agent's prompt,
+schema, tool definitions, or model/request configuration:
+
+    pytest tests/test_agent_pipeline_live.py --record      # real, billed API calls
+
+A replay fails by itself if a prompt or the request configuration moved on since the recording
+(`tests/fixtures/cassette.py` hashes both into the fixture), so this is enforced rather than
+remembered. `--cassette-mode live` hits the real API without touching the committed fixture.
+
+**Running this in `record` or `live` mode is also how the tier-1 fixture gets its model half.**
+`tests/fixtures/answerer_turn.json` carries recorded-for-real `tool_payloads` and a draft
+synthesized from them, because no credentials were available when it was written.
 `python -m tests.fixtures.record_answerer_turn --with-model` re-records both halves from one
 real turn and flips the fixture's `draft_source` marker; nothing else changes.
 
-**Skips cleanly without an API key**, following #113/#115's pattern: the reason string says
-what is missing and how to supply it, so a skip in a CI log is self-explaining. A skip is not
-a pass, and a run that skipped this should say so.
-
-Qdrant is not required. Without it `search_documentation` returns a real failed payload and
-the answer degrades — which is a legitimate outcome for this test to observe, and is why the
-assertions below are about the *tier being valid and honest*, never about it being
-`grounded`.
+Qdrant is not required, and **the committed cassettes are deliberately recorded without it**,
+matching CI, where the documentation index sits behind an opt-in compose profile that does not
+run. Without it `search_documentation` returns a real failed payload and the answer degrades —
+a legitimate outcome for this test to observe, and why the assertions below are about the
+*tier being valid and honest*, never about it being `grounded`. Recording with Qdrant up would
+be the one genuinely unsafe direction: the recorded draft would cite chunk ids that CI's
+evidence set cannot contain. The reverse is harmless, so replaying on a machine that does have
+Qdrant is fine. Each cassette's `notes` records the probed state.
 """
 from __future__ import annotations
 
 import asyncio
-import os
 import socket
 import subprocess
 import sys
@@ -49,29 +70,10 @@ QUESTION = (
     "documentation say about how far its predictions can be trusted?"
 )
 
-
-def _has_anthropic_credentials() -> bool:
-    """Whether the SDK has *something* to authenticate with. Same check as #113/#115: an
-    unset `ANTHROPIC_API_KEY` does not by itself mean there are no credentials."""
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        return True
-    config_dir = Path(
-        os.environ.get("ANTHROPIC_CONFIG_DIR", Path.home() / ".config" / "anthropic")
-    )
-    return (config_dir / "credentials").is_dir() and any(
-        (config_dir / "credentials").glob("*.json")
-    )
-
-
-requires_api_key = pytest.mark.skipif(
-    not _has_anthropic_credentials(),
-    reason=(
-        "requires Anthropic credentials (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an "
-        "`ant auth login` profile): this is the single live end-to-end call for Issue #116. "
-        "Every other assertion about the pipeline runs without credentials in "
-        "tests/test_agent_pipeline.py"
-    ),
-)
+# One cassette per test: each is an independent conversation, and sharing one would make the
+# second test's result depend on the first having run, in order, in the same process.
+TWO_STEP_CASSETTE = "pipeline_live__verified_tiered_answer"
+ONE_CALL_CASSETTE = "pipeline_live__answer_and_verify"
 
 
 def _free_port() -> int:
@@ -107,20 +109,29 @@ def populated_serving_api(tmp_path):
         proc.wait(timeout=10)
 
 
-@requires_api_key
 def test_one_real_question_produces_a_verified_tiered_answer(
-    populated_serving_api, tmp_path, capsys
+    populated_serving_api, tmp_path, capsys, model_cassette
 ):
     """The two-step form, so the test can hold both halves of the turn and check that the
     released claims trace back to tool results from **this** call.
-    `answer_and_verify_async` is exactly these two lines composed."""
+    `answer_and_verify_async` is exactly these two lines composed.
+
+    The two steps share one `asyncio.run` (they were two before #122) because they now share
+    one client, and an httpx connection pool belongs to the loop it was opened on — recording
+    across two loops would tear the pool down between the answerer's calls and the critic's.
+    Nothing about what is asserted changes; the two calls are still separate and still made in
+    that order."""
     db_path = tmp_path / "inventory.db"
     build_db(db_path)
 
-    turn = asyncio.run(
-        answer_turn_async(QUESTION, serving_url=populated_serving_api, db_path=db_path)
-    )
-    response = asyncio.run(verify_turn_async(turn))
+    async def _run(client):
+        turn = await answer_turn_async(
+            QUESTION, client=client, serving_url=populated_serving_api, db_path=db_path
+        )
+        return turn, await verify_turn_async(turn, critic_client=client)
+
+    with model_cassette(TWO_STEP_CASSETTE) as client:
+        turn, response = asyncio.run(_run(client))
 
     assert response.grounding_tier in TIERS
     assert response.text.strip()
@@ -139,7 +150,7 @@ def test_one_real_question_produces_a_verified_tiered_answer(
         assert response.claims == ()
 
     with capsys.disabled():
-        print("\n--- live pipeline run ---")
+        print("\n--- pipeline run ---")
         print(f"tier: {response.grounding_tier}")
         print(f"tool results recorded: {len(turn.tool_payloads)}")
         for payload in turn.tool_payloads:
@@ -154,20 +165,29 @@ def test_one_real_question_produces_a_verified_tiered_answer(
         print(response.text)
 
 
-@requires_api_key
 def test_the_one_call_entry_point_returns_the_same_shape(
-    populated_serving_api, tmp_path, capsys
+    populated_serving_api, tmp_path, capsys, model_cassette
 ):
-    """`answer_and_verify` is the documented entry point, so it gets its own live call rather
-    than being assumed equivalent to the composed form above."""
+    """`answer_and_verify` is the documented entry point, so it gets its own call rather than
+    being assumed equivalent to the composed form above.
+
+    One client for both `client` and `critic_client`. `pipeline.answer_and_verify_async` keeps
+    them separate arguments because A and B are separate agents with separate request
+    configurations, and its own docstring says passing one object for both changes nothing
+    about the boundary — which is the tool surface, not the transport."""
     db_path = tmp_path / "inventory.db"
     build_db(db_path)
 
-    response = asyncio.run(
-        answer_and_verify_async(
-            QUESTION, serving_url=populated_serving_api, db_path=db_path
+    with model_cassette(ONE_CALL_CASSETTE) as client:
+        response = asyncio.run(
+            answer_and_verify_async(
+                QUESTION,
+                client=client,
+                critic_client=client,
+                serving_url=populated_serving_api,
+                db_path=db_path,
+            )
         )
-    )
 
     assert response.grounding_tier in TIERS
     assert response.text.strip()

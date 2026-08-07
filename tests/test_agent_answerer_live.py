@@ -1,4 +1,4 @@
-"""The one live call through Agent A (Issue #112, `docs/agent_design.md` Sections 1 and 6).
+"""The one recorded call through Agent A (Issue #112, `docs/agent_design.md` Sections 1 and 6).
 
 **This is not Section 8's golden set**, which is a separate, later issue. It exists to prove
 the wiring produces a schema-valid, non-empty draft at all, once, against real infrastructure:
@@ -6,11 +6,34 @@ a real serving process with real per-bearing state, a real read-only MCP server 
 the real inventory database, and a real model call. Everything else about Agent A is asserted
 without a model in `tests/test_agent_answerer.py`, where it cannot flake.
 
-**Skips cleanly without an API key**, following the same pattern as this repo's existing
-`data/processed`-dependent skips (`tests/test_build_training_dataset.py`): the reason string
-says what is missing and how to supply it, so a skip in a CI log is self-explaining rather
-than something to go and look up. A skip is not a pass, and a run that skipped this should say
-so.
+**The model call is replayed from a committed cassette by default (Issue #122)**, so this test
+now runs on every PR, in ordinary CI, with no API key, no network access and no cost -- where
+before it skipped for lack of a key and therefore protected nothing on the branches that
+mattered. Everything else here is still real: the uvicorn process, the 60 replayed windows,
+the MCP server subprocess, the inventory database, and the tool calls, which `tool_runner`
+really makes in response to the recorded `tool_use` blocks.
+
+**What a replay stops proving**, stated plainly because a green test that has quietly narrowed
+is worse than a skipped one: that the model would make these tool choices and write this draft
+*today*. It still proves the harness drives the loop, the enveloping chokepoint holds, the
+tools answer, and the response parses into Section 6's shape.
+
+**When to re-record.** Deliberately, not routinely -- after a change to the system prompt, the
+draft schema, the tool definitions, or the model/request configuration:
+
+    pytest tests/test_agent_answerer_live.py --record      # real, billed API calls
+
+You should rarely have to remember: `tests/fixtures/cassette.py` hashes the prompts and request
+configuration into each cassette and a replay fails with the list of what changed, which is
+`docs/agent_design.md` Section 8's "no prompt change merges without a recorded run" rule made
+mechanical. To hit the real API without touching the committed fixture, use
+`--cassette-mode live`.
+
+**The cassettes are deliberately recorded with Qdrant down**, matching CI, where the
+documentation index is behind an opt-in compose profile that does not run. Recording with it up
+would bake chunk ids into the draft that CI's evidence set cannot contain, and the test would
+fail on the honest machine rather than the misconfigured one. Each cassette's `notes` records
+the probed state, so this is a fact in the file rather than a claim in a docstring.
 
 The bearing is populated the way the rest of the repo populates one -- `demo/playback.py`
 against a real uvicorn process, exactly as `tests/test_demo_playback.py` does -- because
@@ -18,7 +41,6 @@ against a real uvicorn process, exactly as `tests/test_demo_playback.py` does --
 """
 from __future__ import annotations
 
-import os
 import socket
 import subprocess
 import sys
@@ -39,33 +61,11 @@ REPLAY_WINDOWS = 60
 BEARING_ID = "2nd_test-demo"
 QUESTION = f"What is the current status of bearing {BEARING_ID}?"
 
-def _has_anthropic_credentials() -> bool:
-    """Whether the SDK has *something* to authenticate with.
-
-    An unset `ANTHROPIC_API_KEY` does not by itself mean there are no credentials: the SDK
-    also reads `ANTHROPIC_AUTH_TOKEN` and a stored `ant auth login` profile. Checking only
-    the one env var would skip this test on a machine where it would have run, which is the
-    opposite of what a gate is for.
-    """
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        return True
-    config_dir = Path(
-        os.environ.get("ANTHROPIC_CONFIG_DIR", Path.home() / ".config" / "anthropic")
-    )
-    return (config_dir / "credentials").is_dir() and any(
-        (config_dir / "credentials").glob("*.json")
-    )
-
-
-requires_api_key = pytest.mark.skipif(
-    not _has_anthropic_credentials(),
-    reason=(
-        "requires Anthropic credentials (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an "
-        "`ant auth login` profile): this is the single live model call for Issue #112, and "
-        "it is deliberately the only test in the suite that needs one. Every other assertion "
-        "about the answerer runs without credentials in tests/test_agent_answerer.py"
-    ),
-)
+# One cassette per test rather than one per file: each test is an independent conversation with
+# the API, and a shared recording would make the second test's result depend on the first
+# having run, in order, in the same process.
+DRAFT_CASSETTE = "answerer_live__schema_valid_draft"
+ENVELOPE_CASSETTE = "answerer_live__request_envelope"
 
 
 def _free_port() -> int:
@@ -104,14 +104,16 @@ def populated_serving_api(tmp_path):
         proc.wait(timeout=10)
 
 
-@requires_api_key
 def test_one_real_question_produces_a_schema_valid_non_empty_draft(
-    populated_serving_api, tmp_path, capsys
+    populated_serving_api, tmp_path, capsys, model_cassette
 ):
     db_path = tmp_path / "inventory.db"
     build_db(db_path)
 
-    draft = answer(QUESTION, serving_url=populated_serving_api, db_path=db_path)
+    with model_cassette(DRAFT_CASSETTE) as client:
+        draft = answer(
+            QUESTION, client=client, serving_url=populated_serving_api, db_path=db_path
+        )
 
     # Schema-valid by construction (`answer` parses through the model), and non-empty in the
     # sense that matters: it actually said something, and said where it came from.
@@ -123,23 +125,32 @@ def test_one_real_question_produces_a_schema_valid_non_empty_draft(
     )
 
     with capsys.disabled():
-        print("\n--- live draft ---")
+        print("\n--- draft ---")
         print(draft.model_dump_json(indent=2))
 
 
-@requires_api_key
-def test_the_live_call_wraps_its_question_in_this_requests_envelope(populated_serving_api,
-                                                                   tmp_path):
+def test_the_live_call_wraps_its_question_in_this_requests_envelope(
+    populated_serving_api, tmp_path, model_cassette
+):
     """The envelope is not a test-only wrapper: the same call path that answers a real
-    question is the one that builds the envelope, so a live run and a tier-1 run exercise the
-    same chokepoint."""
+    question is the one that builds the envelope, so this run and a tier-1 run exercise the
+    same chokepoint.
+
+    Replay does not weaken this one at all: the envelope is built by the harness on the way
+    *out*, before anything reaches the transport, so what is asserted here never depended on
+    the response being fresh."""
     db_path = tmp_path / "inventory.db"
     build_db(db_path)
     envelope = UntrustedEnvelope()
 
-    draft = answer(
-        QUESTION, serving_url=populated_serving_api, db_path=db_path, envelope=envelope
-    )
+    with model_cassette(ENVELOPE_CASSETTE) as client:
+        draft = answer(
+            QUESTION,
+            client=client,
+            serving_url=populated_serving_api,
+            db_path=db_path,
+            envelope=envelope,
+        )
 
     assert isinstance(draft, Draft)
     assert len(envelope.nonce) == 32
