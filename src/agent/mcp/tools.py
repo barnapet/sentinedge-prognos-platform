@@ -24,6 +24,8 @@ from typing import Any, Callable, Sequence
 
 from mcp.types import CallToolResult
 
+from src.agent.executor import approval
+from src.agent.executor.approval import ApprovalTokenStore, TokenError
 from src.agent.inventory.build_db import DB_PATH
 from src.agent.inventory.orders import (
     InventoryError,
@@ -63,6 +65,18 @@ INVENTORY_SOURCE_ID = "data/agent/inventory.db"
 DOCS_SOURCE_ID = f"SEARCH {COLLECTION_NAME}"
 
 SearchFn = Callable[..., Sequence[RetrievedChunk]]
+
+# Plain-language rejections for each of approval.py's four closed `TokenError` reasons
+# (Issue #124). Keyed off the module's own constants rather than the literal strings, so a
+# typo here would be a `KeyError` at test time, not a silently-wrong message.
+_APPROVAL_TOKEN_ERROR_MESSAGES = {
+    approval.UNKNOWN: "the approval token is not recognized",
+    approval.EXPIRED: "the approval token has expired",
+    approval.ALREADY_USED: "the approval token has already been used",
+    approval.SCOPE_MISMATCH: (
+        "the approval token does not match this order's part number, quantity, and bearing"
+    ),
+}
 
 
 # --------------------------------------------------------------------------------------
@@ -243,10 +257,10 @@ def place_order(
     part_number: str,
     quantity: int,
     requested_by: str,
-    approved_by: str,
-    approved_at: str,
+    approval_token: str,
     bearing_id: str | None = None,
     *,
+    token_store: ApprovalTokenStore,
     db_path: Path = DB_PATH,
 ) -> CallToolResult:
     """Place one order: decrement stock and insert an `orders` row, in one transaction.
@@ -256,13 +270,17 @@ def place_order(
     the schema, which `docs/agent_design.md` Section 7 calls the second, independent
     enforcement of the approval gate.
 
-    **The approval gate itself is not built here, and this tool does not pretend to be
-    one.** Section 5's `approval_token` -- minted out-of-band by the harness, scoped to one
-    order, single-use, short-lived -- belongs to the agent layer that calls this tool, and
-    Issue #110 excludes it explicitly. What this tool requires is what the *database*
-    requires: a recorded approver and approval time. A caller that has not been through a
-    gate can still reach this function; what it cannot do is write a row with no recorded
-    approval, and that is the property the schema owns.
+    **The approval gate is now enforced here (Issue #125).** `approved_by`/`approved_at`
+    are no longer caller-supplied arguments -- Issue #110 and `docs/agent_design.md`
+    Section 10 named that gap explicitly: a tool schema that lets the model fill in its own
+    approver/timestamp turns a successful injection into a satisfied constraint. Instead the
+    caller supplies `approval_token`, which is validated -- exists, unexpired, scope match,
+    unconsumed -- against `token_store` (`src/agent/executor/approval.py`, Issue #124,
+    unmodified here) via `token_store.consume(...)`. `approved_by`/`approved_at` are then
+    *derived* from the `ApprovedOrder` that validation returns, never from an argument. A
+    rejected token writes nothing -- validation happens before the database is touched.
+    `requested_by` is unaffected by any of this and stays an ordinary caller-supplied
+    argument.
     """
     if quantity <= 0:
         return failed("inventory", INVENTORY_SOURCE_ID, "quantity must be a positive whole number")
@@ -270,6 +288,19 @@ def place_order(
     db_path = Path(db_path)
     if not db_path.exists():
         return failed("inventory", INVENTORY_SOURCE_ID, INVENTORY_UNAVAILABLE)
+
+    consumed = token_store.consume(approval_token, part_number, quantity, bearing_id)
+    if isinstance(consumed, TokenError):
+        return failed(
+            "inventory",
+            INVENTORY_SOURCE_ID,
+            f"{ORDER_FAILED}: {_APPROVAL_TOKEN_ERROR_MESSAGES[consumed.reason]}",
+        )
+    # `ApprovedOrder.approved_at` is a `datetime` (Issue #124); `orders.place_order`'s
+    # `approved_at` column is `TEXT NOT NULL` (Section 7) -- the one `.isoformat()` seam
+    # PR #128 flagged as needed here.
+    approved_by = consumed.approved_by
+    approved_at = consumed.approved_at.isoformat()
 
     conn = sqlite3.connect(db_path)
     try:
