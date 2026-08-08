@@ -37,6 +37,14 @@ that is presented against the wrong order is a scope error regardless of whether
 to have been spent already -- an already-used token being replayed against a *different*
 order should still be reported as a mismatch, not as "already used", because "already used"
 implies the presented order was in fact the one it authorized.
+
+**Quantity validity is deliberately not this module's job.** `mint`/`consume` accept and
+compare whatever `quantity` they are given -- this module authorizes a scope, it does not
+judge whether that scope is a sensible order -- and a non-positive quantity is already
+rejected independently at both places an order actually happens: the `place_order` MCP tool
+(`tests/test_agent_mcp_tools.py::test_a_rejected_order_is_a_tool_result_and_writes_nothing`,
+`zero-quantity`/`negative-quantity`) and `src/agent/inventory/orders.py`'s `place_order`
+(`tests/test_agent_inventory.py::test_place_order_rejects_non_positive_quantity`).
 """
 from __future__ import annotations
 
