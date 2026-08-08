@@ -15,11 +15,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from src.agent.executor.approval import TOKEN_LIFETIME, ApprovalTokenStore
 from src.agent.inventory.build_db import build_db
 from src.agent.mcp.results import (
     DOCS_INDEX_UNREACHABLE,
@@ -421,7 +422,8 @@ def test_an_unknown_source_type_filter_is_refused_before_any_retrieval():
 
 
 # --------------------------------------------------------------------------------------
-# place_order -- wraps the Issue #101 transactional path
+# place_order -- wraps the Issue #101 transactional path; the approval-token gate is #125,
+# validated against `src/agent/executor/approval.py` (#124, not modified here).
 # --------------------------------------------------------------------------------------
 
 
@@ -443,17 +445,30 @@ def _stock(db_path, part_number: str) -> int:
         conn.close()
 
 
+def _minted(
+    store: ApprovalTokenStore,
+    part_number: str,
+    quantity: int,
+    bearing_id: str | None = None,
+    approved_by: str = "supervisor-02",
+):
+    """Mint a token scoped to exactly the order a test is about to place."""
+    return store.mint(part_number, quantity, bearing_id, approved_by)
+
+
 def test_place_order_writes_a_real_row_and_decrements_real_stock(db_path):
     part = _some_part(db_path)
     before = _stock(db_path, part["part_number"])
+    store = ApprovalTokenStore()
+    token = _minted(store, part["part_number"], 2, bearing_id="2nd_test-demo")
 
     result = place_order(
         part["part_number"],
         2,
         requested_by="tech-01",
-        approved_by="supervisor-02",
-        approved_at="2026-08-05T09:00:00+00:00",
+        approval_token=token.token,
         bearing_id="2nd_test-demo",
+        token_store=store,
         db_path=db_path,
     )
 
@@ -461,6 +476,10 @@ def test_place_order_writes_a_real_row_and_decrements_real_stock(db_path):
     assert result.is_error is False
     assert _stock(db_path, part["part_number"]) == before - 2
     assert _order_count(db_path) == 1
+    # approved_by/approved_at on the response are what the tool derived from the token,
+    # not anything a caller passed -- there is no longer an argument to pass.
+    assert data["approved_by"] == "supervisor-02"
+    assert data["approved_at"] == token.approved_at.isoformat()
 
     conn = sqlite3.connect(db_path)
     try:
@@ -470,19 +489,23 @@ def test_place_order_writes_a_real_row_and_decrements_real_stock(db_path):
         ).fetchone()
     finally:
         conn.close()
-    assert row == ("supervisor-02", "2026-08-05T09:00:00+00:00", 2)
+    # The written row matches the *token record*, not anything the test could have supplied
+    # as a tool argument.
+    assert row == ("supervisor-02", token.approved_at.isoformat(), 2)
 
 
 def test_an_oversell_leaves_no_partial_write_behind(db_path):
     part = _some_part(db_path)
     before = _stock(db_path, part["part_number"])
+    store = ApprovalTokenStore()
+    token = _minted(store, part["part_number"], before + 1)
 
     result = place_order(
         part["part_number"],
         before + 1,
         requested_by="tech-01",
-        approved_by="supervisor-02",
-        approved_at="2026-08-05T09:00:00+00:00",
+        approval_token=token.token,
+        token_store=store,
         db_path=db_path,
     )
 
@@ -501,12 +524,19 @@ def test_an_oversell_leaves_no_partial_write_behind(db_path):
 )
 def test_a_rejected_order_is_a_tool_result_and_writes_nothing(db_path, kwargs):
     part = _some_part(db_path)
+    part_number = kwargs.get("part_number", part["part_number"])
+    quantity = kwargs["quantity"]
+    store = ApprovalTokenStore()
+    # zero/negative quantity is rejected before the token is even checked (see tools.py);
+    # minting a token scoped to it anyway keeps this test agnostic to that ordering.
+    token = _minted(store, part_number, quantity)
+
     result = place_order(
-        kwargs.get("part_number", part["part_number"]),
-        kwargs["quantity"],
+        part_number,
+        quantity,
         requested_by="tech-01",
-        approved_by="supervisor-02",
-        approved_at="2026-08-05T09:00:00+00:00",
+        approval_token=token.token,
+        token_store=store,
         db_path=db_path,
     )
 
@@ -516,14 +546,124 @@ def test_a_rejected_order_is_a_tool_result_and_writes_nothing(db_path, kwargs):
 
 
 def test_place_order_reports_a_missing_database_rather_than_raising(tmp_path):
+    store = ApprovalTokenStore()
+    token = _minted(store, "BRG-6205-2RS", 1)
+
     result = place_order(
         "BRG-6205-2RS",
         1,
         requested_by="tech-01",
-        approved_by="supervisor-02",
-        approved_at="2026-08-05T09:00:00+00:00",
+        approval_token=token.token,
+        token_store=store,
         db_path=tmp_path / "absent.db",
     )
 
     assert result.is_error is True
     assert payload_of(result)["error"] == INVENTORY_UNAVAILABLE
+
+
+# --- Issue #125: the four token-rejection paths, and that each leaves `orders` alone -----
+
+
+def test_an_unknown_token_is_rejected_and_orders_is_unchanged(db_path):
+    part = _some_part(db_path)
+    store = ApprovalTokenStore()
+
+    result = place_order(
+        part["part_number"],
+        1,
+        requested_by="tech-01",
+        approval_token="not-a-real-token",
+        token_store=store,
+        db_path=db_path,
+    )
+
+    assert result.is_error is True
+    assert payload_of(result)["error"]
+    assert _order_count(db_path) == 0
+
+
+def test_an_expired_token_is_rejected_and_orders_is_unchanged(db_path):
+    part = _some_part(db_path)
+    now = datetime(2026, 8, 5, 9, 0, 0)
+    clock = [now]
+    store = ApprovalTokenStore(clock=lambda: clock[0])
+    token = _minted(store, part["part_number"], 1)
+
+    clock[0] = now + TOKEN_LIFETIME + timedelta(seconds=1)
+    result = place_order(
+        part["part_number"],
+        1,
+        requested_by="tech-01",
+        approval_token=token.token,
+        token_store=store,
+        db_path=db_path,
+    )
+
+    assert result.is_error is True
+    assert payload_of(result)["error"]
+    assert _order_count(db_path) == 0
+
+
+def test_an_already_used_token_is_rejected_and_orders_is_unchanged(db_path):
+    part = _some_part(db_path)
+    store = ApprovalTokenStore()
+    token = _minted(store, part["part_number"], 1)
+    first = place_order(
+        part["part_number"],
+        1,
+        requested_by="tech-01",
+        approval_token=token.token,
+        token_store=store,
+        db_path=db_path,
+    )
+    assert first.is_error is False
+    assert _order_count(db_path) == 1
+
+    second = place_order(
+        part["part_number"],
+        1,
+        requested_by="tech-01",
+        approval_token=token.token,
+        token_store=store,
+        db_path=db_path,
+    )
+
+    assert second.is_error is True
+    assert payload_of(second)["error"]
+    # No second row: the rejection didn't just fail to charge stock, it wrote nothing.
+    assert _order_count(db_path) == 1
+
+
+def test_a_scope_mismatched_token_is_rejected_and_orders_is_unchanged(db_path):
+    """A token minted for a different quantity than the call presents -- otherwise
+    identical and otherwise valid -- must still be refused."""
+    part = _some_part(db_path)
+    store = ApprovalTokenStore()
+    token = _minted(store, part["part_number"], 1)
+
+    result = place_order(
+        part["part_number"],
+        2,  # minted for 1
+        requested_by="tech-01",
+        approval_token=token.token,
+        token_store=store,
+        db_path=db_path,
+    )
+
+    assert result.is_error is True
+    assert payload_of(result)["error"]
+    assert _order_count(db_path) == 0
+
+    # The token itself is untouched by the mismatched attempt -- it still consumes
+    # correctly against the order it was actually minted for.
+    retried = place_order(
+        part["part_number"],
+        1,
+        requested_by="tech-01",
+        approval_token=token.token,
+        token_store=store,
+        db_path=db_path,
+    )
+    assert retried.is_error is False
+    assert _order_count(db_path) == 1
