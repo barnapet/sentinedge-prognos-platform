@@ -1,5 +1,5 @@
 """Tier-1 tests for the two MCP servers themselves (Issue #110, `docs/agent_design.md`
-Sections 2, 8 and 10).
+Sections 2, 8 and 10; the `place_order` argument surface fixed by Issue #125).
 
 Two claims are under test here, and both are claims about *structure* rather than about
 behaviour a model chose:
@@ -18,6 +18,20 @@ No API key and no network: the stdio transport is a pair of pipes, the serving A
 started (its tools fail closed against a dead port, which is fine -- what is being measured
 here is the cap and the tool surface, not the tools' payloads), and the inventory database
 is built in `tmp_path`.
+
+**Issue #125's approval-token wrinkle for the subprocess tests.** `ApprovalTokenStore` is
+in-process, no-durable-state by design (#124) -- exactly right for the in-process
+`server.call_tool()` tests below, where the test and the server share one Python process and
+can mint into the same store `build_write_server` returns. It cannot be right for `_probe`,
+which spawns `write_server.py` as a real OS subprocess (Section 2's actual security
+boundary): that subprocess builds its own fresh, empty store in `main()`, and nothing this
+test process mints is ever visible to it. Wiring a token minted by one process into a store
+consumed by another is exactly the kind of orchestrator question Issue #125 excludes
+("do not build the orchestrator wiring"), so `test_a_client_of_the_write_server_can_reach_
+place_order_and_only_that` below asserts what *can* be shown across a real process boundary
+without that wiring -- that the tool is genuinely reachable and executes real validation
+(an `unknown`-token rejection), not that a full order can be placed through a bare subprocess
+with no orchestrator behind it. Flagged here rather than silently narrowed elsewhere.
 """
 from __future__ import annotations
 
@@ -30,6 +44,7 @@ from pathlib import Path
 import pytest
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
+from src.agent.executor.approval import ApprovalTokenStore
 from src.agent.inventory.build_db import build_db
 from src.agent.mcp.budget import BUDGET_EXHAUSTED, MAX_TOOL_CALLS, ToolCallBudget
 from src.agent.mcp.readonly_server import READONLY_TOOL_NAMES
@@ -41,13 +56,21 @@ from src.agent.mcp.write_server import build_server as build_write_server
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLOSED_PORT_URL = "http://127.0.0.1:9"
 
-APPROVED_ORDER = {
+# No `approved_by`/`approved_at` (Issue #125 -- those are no longer arguments at all) and no
+# `approval_token` (minted per-test, per-store, by `_approved_order` below).
+ORDER_ARGS = {
     "part_number": "BRG-6205-2RS",
     "quantity": 1,
     "requested_by": "tech-01",
-    "approved_by": "supervisor-02",
-    "approved_at": "2026-08-05T09:00:00+00:00",
 }
+
+
+def _approved_order(token_store: ApprovalTokenStore, approved_by: str = "supervisor-02") -> dict:
+    """`ORDER_ARGS` plus a token freshly minted, in `token_store`, for exactly that order."""
+    token = token_store.mint(
+        ORDER_ARGS["part_number"], ORDER_ARGS["quantity"], None, approved_by
+    )
+    return {**ORDER_ARGS, "approval_token": token.token}
 
 
 @pytest.fixture
@@ -79,7 +102,7 @@ def test_the_read_only_server_registers_exactly_the_four_read_only_tools(db_path
 
 
 def test_the_write_server_registers_place_order_and_nothing_else(db_path):
-    server, _ = build_write_server(db_path=db_path)
+    server, _, _ = build_write_server(db_path=db_path)
 
     assert [tool.name for tool in asyncio.run(server.list_tools())] == list(WRITE_TOOL_NAMES)
 
@@ -88,7 +111,7 @@ def test_the_two_servers_tool_sets_are_disjoint(db_path):
     readonly, _ = build_readonly_server(
         base_url=CLOSED_PORT_URL, db_path=db_path, search=_no_hits
     )
-    write, _ = build_write_server(db_path=db_path)
+    write, _, _ = build_write_server(db_path=db_path)
 
     readonly_names = {tool.name for tool in asyncio.run(readonly.list_tools())}
     write_names = {tool.name for tool in asyncio.run(write.list_tools())}
@@ -100,18 +123,62 @@ def test_the_two_servers_tool_sets_are_disjoint(db_path):
 def test_no_tool_schema_exposes_an_injected_dependency(db_path):
     """A tool's backing URL, database path and retrieval function are bound at registration
     time, so they are not arguments -- and an argument that is not in the schema is an
-    argument no prompt can supply."""
+    argument no prompt can supply. `token_store` (Issue #125) joins `budget` here for the
+    same reason -- the store is injected at registration, `approval_token` is the only
+    approval-related thing a caller ever supplies."""
     readonly, _ = build_readonly_server(
         base_url=CLOSED_PORT_URL, db_path=db_path, search=_no_hits
     )
-    write, _ = build_write_server(db_path=db_path)
+    write, _, _ = build_write_server(db_path=db_path)
 
     for server in (readonly, write):
         for tool in asyncio.run(server.list_tools()):
             properties = set(tool.input_schema.get("properties", {}))
-            assert properties.isdisjoint({"base_url", "db_path", "search", "budget"}), (
-                f"{tool.name} exposes an injected dependency: {properties}"
-            )
+            assert properties.isdisjoint(
+                {"base_url", "db_path", "search", "budget", "token_store"}
+            ), f"{tool.name} exposes an injected dependency: {properties}"
+
+
+def test_place_orders_schema_no_longer_accepts_approved_by_or_approved_at(db_path):
+    """Issue #125: `approved_by`/`approved_at` must be gone from the schema itself, not just
+    ignored at runtime -- the whole point is that a model filling them in can no longer
+    produce a satisfied-looking call. `approval_token` replaces them."""
+    write, _, _ = build_write_server(db_path=db_path)
+
+    (place_order_tool,) = asyncio.run(write.list_tools())
+    properties = set(place_order_tool.input_schema.get("properties", {}))
+
+    assert properties.isdisjoint({"approved_by", "approved_at"})
+    assert "approval_token" in properties
+    assert "approval_token" in place_order_tool.input_schema.get("required", [])
+
+
+def test_calling_place_order_with_the_old_approved_by_shape_is_a_schema_level_rejection(
+    db_path,
+):
+    """Not just 'the value is ignored': a call built the old way (no `approval_token`) never
+    reaches the tool body at all -- it fails argument validation, which is a different kind
+    of failure than the tool's own `is_error=True` result for a rejected order."""
+    write, _, _ = build_write_server(db_path=db_path)
+
+    old_style_call = {
+        **ORDER_ARGS,
+        "approved_by": "supervisor-02",
+        "approved_at": "2026-08-05T09:00:00+00:00",
+    }
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(write.call_tool("place_order", old_style_call))
+
+    # A schema-validation failure, not a normal tool result -- distinguishes this from
+    # `is_error=True`, which is a return value, not an exception.
+    assert "approval_token" in str(exc_info.value)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_no_tool_can_reset_the_budget(db_path):
@@ -120,7 +187,7 @@ def test_no_tool_can_reset_the_budget(db_path):
     readonly, _ = build_readonly_server(
         base_url=CLOSED_PORT_URL, db_path=db_path, search=_no_hits
     )
-    write, _ = build_write_server(db_path=db_path)
+    write, _, _ = build_write_server(db_path=db_path)
 
     names = [t.name for t in asyncio.run(readonly.list_tools())]
     names += [t.name for t in asyncio.run(write.list_tools())]
@@ -181,11 +248,13 @@ def test_the_cap_counts_across_every_tool_on_a_server_not_per_tool(db_path):
 
 
 def test_the_write_server_refuses_a_ninth_order_and_writes_no_ninth_row(db_path):
-    server, _ = build_write_server(db_path=db_path)
+    server, _, token_store = build_write_server(db_path=db_path)
 
     async def run() -> list:
+        # A fresh token per call -- each is single-use, so the ninth refusal must be the
+        # budget firing, not the eighth token being replayed.
         return [
-            await server.call_tool("place_order", dict(APPROVED_ORDER))
+            await server.call_tool("place_order", _approved_order(token_store))
             for _ in range(MAX_TOOL_CALLS + 1)
         ]
 
@@ -272,7 +341,7 @@ def test_a_client_of_the_read_only_server_cannot_reach_place_order(db_path):
             "src.agent.mcp.readonly_server",
             db_path,
             "place_order",
-            dict(APPROVED_ORDER),
+            {**ORDER_ARGS, "approval_token": "irrelevant-the-tool-does-not-exist-here"},
         )
     )
 
@@ -291,17 +360,33 @@ def test_a_client_of_the_read_only_server_cannot_reach_place_order(db_path):
 
 def test_a_client_of_the_write_server_can_reach_place_order_and_only_that(db_path):
     """The other half of the same claim -- without it, the test above would also pass if
-    `place_order` were broken everywhere."""
+    `place_order` were broken everywhere.
+
+    This subprocess's `ApprovalTokenStore` is its own, built fresh inside `main()`, and
+    nothing this test process mints is visible to it (see the module docstring's note on
+    Issue #125's process-boundary wrinkle) -- so this cannot show a full order succeeding.
+    What it *can* show, and what actually distinguishes "reachable" from "broken", is that
+    the call reaches real validation logic and is rejected for a substantive reason
+    (`unknown` token) rather than for not existing on this connection at all -- the
+    read-only-server test above gets "Unknown tool: place_order"; this one must not.
+    """
     seen = asyncio.run(
-        _probe("src.agent.mcp.write_server", db_path, "place_order", dict(APPROVED_ORDER))
+        _probe(
+            "src.agent.mcp.write_server",
+            db_path,
+            "place_order",
+            {**ORDER_ARGS, "approval_token": "no-such-token-was-ever-minted-here"},
+        )
     )
 
     assert seen["tools"] == list(WRITE_TOOL_NAMES)
-    assert seen["is_error"] is False
+    assert seen["is_error"] is True
+    assert "Unknown tool" not in seen["text"]
+    assert "approval token is not recognized" in seen["text"]
 
     conn = sqlite3.connect(db_path)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
     finally:
         conn.close()
 
