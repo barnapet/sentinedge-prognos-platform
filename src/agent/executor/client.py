@@ -77,19 +77,25 @@ place an order against the tool as it exists today.
 **Why `execute_order` takes a session rather than opening its own.** The structural
 least-privilege claims (this client's tool surface, and that it cannot reach a read-only
 tool) are tested the way Section 10 case 6 and `test_agent_mcp_servers.py` already test the
-answerer and the servers: a real subprocess over real stdio, via `write_tools()` below. But a
-subprocess launched by `python -m src.agent.mcp.write_server` builds its own fresh,
-in-process `ApprovalTokenStore` in `main()` (Issue #125's own tests hit this same wall, and
-say so in `test_agent_mcp_servers.py`'s module docstring) -- nothing a test process mints is
-ever visible to it, and wiring a token across that boundary is exactly the orchestrator
-question Issue #126 defers. So the deterministic call logic is factored out as `execute_order
-(order, session)`, taking anything with an MCP-shaped `call_tool(name, arguments)` -- a real
-`ClientSession` from `write_tools()`, or `write_server.build_server()`'s in-process
-`MCPServer`, the same object `test_agent_mcp_servers.py` already calls directly to get a
-*shared*, real `ApprovalTokenStore` for its own behavioural tests. Structural claims use the
-former; a real approved order succeeding, and each of the four token-rejection reasons
-(Issue #125), use the latter. `execute_order_via_write_server` is the convenience entry point
-that does both steps for a real caller who does not need to inject a session.
+answerer and the servers: a real subprocess over real stdio, via `write_tools()` below. So the
+deterministic call logic is factored out as `execute_order(order, session)`, taking anything
+with an MCP-shaped `call_tool(name, arguments)` -- a real `ClientSession` from
+`write_tools()`, or `write_server.build_server()`'s in-process `MCPServer`.
+`execute_order_via_write_server` is the convenience entry point that does both steps for a
+real caller who does not need to inject a session.
+
+**Why that factoring existed, and what changed in Issue #132.** When this module was written,
+a subprocess launched by `python -m src.agent.mcp.write_server` built its own fresh, empty
+`ApprovalTokenStore` in `main()` with no seam to inject one, so nothing a caller minted was
+ever visible to it -- which meant a real approved order, and each of Issue #125's four
+token-rejection reasons, could only be shown against the in-process server, while the
+structural claims used the subprocess. Issue #132 closed that gap with `--token-bridge`
+(`src/agent/executor/token_bridge.py`): the minting process serves `consume` over a Unix
+socket, and `write_tools(..., token_bridge=...)` forwards its path. **A real token minted in
+one process can now be spent by a `place_order` running in another**, which is what the
+orchestrator's production path now does. The in-process path stays -- it is still the
+simplest way to give a test a shared store, and `test_agent_mcp_servers.py` and this module's
+own tests use it -- but it is no longer the only way to place a real order.
 """
 from __future__ import annotations
 
@@ -184,7 +190,9 @@ class ToolCallSession(Protocol):
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult: ...
 
 
-def write_server_params(db_path: Path | None = None) -> StdioServerParameters:
+def write_server_params(
+    db_path: Path | None = None, token_bridge: Path | None = None
+) -> StdioServerParameters:
     """How to launch the write-capable MCP server (#110/#125) as this agent's only tool
     source. The write-server analogue of `answerer.py`'s `readonly_server_params()`.
 
@@ -192,10 +200,19 @@ def write_server_params(db_path: Path | None = None) -> StdioServerParameters:
     direction.** It names one server module, and that module registers one tool,
     `place_order`; the four read-only tools live on `src.agent.mcp.readonly_server`, in a
     different process, over a transport this agent never opens.
+
+    `token_bridge` (Issue #132) is the path of a Unix socket serving the approval-token store
+    of the process that minted the token -- without it the subprocess validates against its
+    own empty store and refuses every order as unknown, which is exactly why PR #131's
+    orchestrator could not use this path. It is a rendezvous address, not a credential: no
+    token value is ever passed on the command line. See
+    `src/agent/executor/token_bridge.py`.
     """
     args = ["-m", "src.agent.mcp.write_server"]
     if db_path is not None:
         args += ["--db-path", str(db_path)]
+    if token_bridge is not None:
+        args += ["--token-bridge", str(token_bridge)]
     return StdioServerParameters(
         command=sys.executable,
         args=args,
@@ -217,7 +234,9 @@ def _assert_write_only_surface(names: Iterable[str]) -> None:
 
 
 @asynccontextmanager
-async def write_tools(db_path: Path | None = None) -> AsyncIterator[ClientSession]:
+async def write_tools(
+    db_path: Path | None = None, token_bridge: Path | None = None
+) -> AsyncIterator[ClientSession]:
     """Open a session to the write server and yield it, ready for `execute_order`.
 
     Raises `RuntimeError` if the connected server offers anything outside
@@ -225,8 +244,10 @@ async def write_tools(db_path: Path | None = None) -> AsyncIterator[ClientSessio
     `readonly_tools()`. Unlike that function, this yields the bare session rather than a list
     of `tool_runner`-shaped tools: there is no model loop here for tools to be wrapped for
     (see the module docstring's LLM-call decision).
+
+    `token_bridge` (Issue #132) is forwarded to the subprocess; see `write_server_params`.
     """
-    async with stdio_client(write_server_params(db_path)) as (read, write):
+    async with stdio_client(write_server_params(db_path, token_bridge)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             listed = (await session.list_tools()).tools
@@ -261,13 +282,18 @@ async def execute_order(order: OrderRequest, session: ToolCallSession) -> Execut
 
 
 async def execute_order_via_write_server(
-    order: OrderRequest, *, db_path: Path | None = None
+    order: OrderRequest, *, db_path: Path | None = None, token_bridge: Path | None = None
 ) -> ExecutionResult:
     """The real entry point: open a fresh session to the actual write server and place one
     order. A fresh session per call, matching `write_server.py`'s single-tool-call-per-
     connection shape in `test_agent_mcp_servers.py`'s own subprocess tests.
+
+    Pass `token_bridge` (Issue #132) to have the subprocess validate against the store that
+    minted `order.approval_token`. Without it the subprocess has an empty store of its own
+    and refuses the order as unknown -- correct behaviour, and not usually what a caller
+    holding a real token wants.
     """
-    async with write_tools(db_path) as session:
+    async with write_tools(db_path, token_bridge) as session:
         return await execute_order(order, session)
 
 
