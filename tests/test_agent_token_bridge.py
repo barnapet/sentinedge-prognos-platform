@@ -218,11 +218,18 @@ def test_without_a_bridge_the_subprocess_still_refuses_every_token(db_path):
 def test_the_bridge_exposes_consume_and_offers_no_way_to_mint():
     """Section 5's out-of-band property, across the boundary: the subprocess can spend an
     approval a human already gave and can create none. `TokenConsumer` is the whole surface,
-    and `mint` is not on it."""
+    and `mint` is not on it.
+
+    The protocol's members are read from `vars()` rather than from `__protocol_attrs__`,
+    which does not exist before CPython 3.12 -- this project develops on 3.12 and runs CI on
+    3.11, and an assertion resting on a version-specific internal is the same trap Issue #82
+    hit with `sum()`. `vars()` answers the same question on both.
+    """
     assert hasattr(RemoteTokenStore, "consume")
     assert not hasattr(RemoteTokenStore, "mint")
-    assert "mint" not in TokenConsumer.__protocol_attrs__
-    assert "consume" in TokenConsumer.__protocol_attrs__
+
+    protocol_members = {name for name in vars(TokenConsumer) if not name.startswith("_")}
+    assert protocol_members == {"consume"}
 
 
 def test_the_socket_lives_in_a_private_directory_and_is_removed_afterwards():
