@@ -24,6 +24,7 @@ from src.labeling import LABELS
 from src.serving.api import create_app
 from src.serving.model_notes import MODEL_NOTES
 from src.serving.single_worker import SingleWorkerViolation
+from src.serving.state import ROLLING_WINDOW
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,6 +84,98 @@ def test_predict_rejects_an_empty_signal(client):
 def test_predict_rejects_a_blank_bearing_id(client):
     response = client.post("/predict", json={"bearing_id": "", "signal": make_signal()})
     assert response.status_code == 422
+
+
+# --- non-finite derived features (Issue #142) --------------------------------------
+
+def test_predict_refuses_a_constant_signal_with_a_422_naming_the_features(client):
+    """Issue #142: a constant window has zero variance, so scipy's kurtosis and skewness
+    divide 0/0 and return `NaN`. That `NaN` used to reach `model.predict`, where
+    scikit-learn raises `ValueError: Input X contains NaN` -- an uncaught exception
+    FastAPI served as a bare 500.
+
+    Asserting the message, not just `!= 500`: the point of the fix is that the caller is
+    told *which* features are undefined and *why*, so a 422 carrying an unhelpful body
+    would pass a status-only check while failing the thing the issue asked for.
+    """
+    response = client.post(
+        "/predict", json={"bearing_id": "constant-bearing", "signal": [1.5] * 64}
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+
+    # The affected features are named individually.
+    assert "kurtosis" in detail
+    assert "skewness" in detail
+    # And the reason, in the issue's own terms.
+    assert "constant" in detail
+    # `rms` is finite for a constant signal (it is just the constant), so naming it would
+    # be wrong -- this pins that the check reports what actually failed.
+    assert "rms_ratio" not in detail
+
+
+def test_a_refused_window_scores_nothing_rather_than_substituting_a_value(client):
+    """The constraint behind the 422, asserted rather than assumed: the issue explicitly
+    rules out substituting a default or interpolated feature and predicting anyway. If a
+    label had been produced from a patched-up vector, `record_prediction` would have
+    tallied it -- so an empty tally is the evidence that nothing was scored.
+    """
+    client.post("/predict", json={"bearing_id": "constant-bearing", "signal": [1.5] * 64})
+
+    state = client.app.state.extractor.store.get_or_create("constant-bearing")
+    assert state.predicted_class_counts == {}
+
+
+def test_a_good_window_after_a_constant_one_is_refused_for_the_carried_over_reason(client):
+    """`skewness_smoothed` is a rolling mean over the last `ROLLING_WINDOW` files, so one
+    constant window leaves it undefined for the following requests even though those
+    signals are fine. Those requests were 500s too, and are 422s now -- but the message
+    must not blame the current window, which is not constant.
+    """
+    client.post("/predict", json={"bearing_id": "carry-over", "signal": [1.5] * 64})
+
+    response = client.post(
+        "/predict", json={"bearing_id": "carry-over", "signal": make_signal(seed=1)}
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "skewness_smoothed" in detail
+    assert "not itself constant" in detail
+    assert str(ROLLING_WINDOW) in detail
+
+
+def test_the_carried_over_refusal_clears_once_the_bad_window_ages_out(client):
+    """Self-healing and bounded, not a bearing wedged permanently: the `NaN` falls out of
+    the deque after `ROLLING_WINDOW` further files, and scoring resumes on its own.
+    """
+    client.post("/predict", json={"bearing_id": "recovers", "signal": [1.5] * 64})
+
+    statuses = [
+        client.post(
+            "/predict", json={"bearing_id": "recovers", "signal": make_signal(seed=i)}
+        ).status_code
+        for i in range(1, ROLLING_WINDOW + 1)
+    ]
+
+    assert statuses[: ROLLING_WINDOW - 1] == [422] * (ROLLING_WINDOW - 1)
+    assert statuses[-1] == 200, "the bearing must recover once the NaN ages out"
+
+
+def test_an_ordinary_signal_is_unaffected_by_the_finiteness_check(client):
+    """The negative half: the check must not start refusing the windows the service
+    exists to score. A wild-but-finite signal still gets a label."""
+    for seed, amplitude in ((0, 0.08), (1, 5.0)):
+        response = client.post(
+            "/predict",
+            json={
+                "bearing_id": f"ordinary-{seed}",
+                "signal": make_signal(seed=seed, amplitude=amplitude),
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["label"] in LABELS
 
 
 # --- the unconditional model_notes disclosure (Section 4) -------------------------

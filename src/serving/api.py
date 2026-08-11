@@ -37,8 +37,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from src.serving.drift import MONITORED_FEATURES
-from src.serving.features import OnlineFeatureExtractor
-from src.serving.state import TRAJECTORY_CHANNELS, TRAJECTORY_HISTORY
+from src.serving.features import SERVING_FEATURE_COLUMNS, OnlineFeatureExtractor
+from src.serving.state import ROLLING_WINDOW, TRAJECTORY_CHANNELS, TRAJECTORY_HISTORY
 from src.serving.model_notes import MODEL_NOTES
 from src.serving.single_worker import (
     DEFAULT_LOCK_PATH,
@@ -128,7 +128,48 @@ def create_app(
             raise HTTPException(422, "signal must contain only finite values")
 
         features = extractor.observe(payload.bearing_id, signal)
-        label = str(model.predict([features.feature_vector()])[0])
+
+        # Issue #142. The `isfinite` check above validates the *raw input*; this one
+        # validates the *derived* features, which the raw check cannot speak for -- a
+        # perfectly finite constant window makes kurtosis and skewness 0/0. Left
+        # unchecked that `NaN` reaches `model.predict`, where scikit-learn raises
+        # `ValueError: Input X contains NaN`, and FastAPI renders the uncaught exception
+        # as a bare 500. Refusing here is deliberate rather than substituting a default or
+        # interpolated value: a label scored on a fabricated feature is a confident answer
+        # built on evidence that was never measured, which is worse than a named refusal.
+        vector = features.feature_vector()
+        undefined = [
+            name
+            for name, value in zip(SERVING_FEATURE_COLUMNS, vector)
+            if not math.isfinite(value)
+        ]
+        if undefined:
+            # Two distinct causes reach this branch, and naming the wrong one would send
+            # the caller looking at the wrong window. A constant window is the direct
+            # case. But `skewness_smoothed` is a rolling mean over the last
+            # `ROLLING_WINDOW` files, so one constant window leaves it undefined for the
+            # following `ROLLING_WINDOW - 1` requests even when the signal in hand is
+            # perfectly good -- that caller needs to hear it is carrying an earlier
+            # window's hole, not that this signal is constant. Both were 500s before.
+            if bool(np.all(signal == signal[0])):
+                cause = (
+                    "kurtosis and skewness are undefined for a constant signal, and this "
+                    f"window is constant at {signal[0]}"
+                )
+            else:
+                cause = (
+                    "this window is not itself constant -- the undefined value is carried "
+                    f"from an earlier window still inside this bearing's {ROLLING_WINDOW}"
+                    "-request rolling mean"
+                )
+            raise HTTPException(
+                422,
+                f"cannot score this window: {', '.join(undefined)} "
+                f"{'is' if len(undefined) == 1 else 'are'} not a finite number -- {cause}. "
+                "No prediction was made and no substitute feature value was used.",
+            )
+
+        label = str(model.predict([vector])[0])
         extractor.record_prediction(payload.bearing_id, label)
 
         return PredictResponse(
