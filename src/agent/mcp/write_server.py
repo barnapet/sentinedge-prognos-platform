@@ -23,6 +23,16 @@ module's job is only to hold that store and thread it through, the same shape it
 uses for `budget`. Minting tokens (i.e. who calls `token_store.mint(...)`, and when) is the
 orchestrator's job, a later issue; this module never mints, only consumes.
 
+**What #132 adds: `--token-bridge`.** Until then this module had no seam for injecting a
+token store into a *running* server, only into `build_server()` -- so `main()` always built
+its own empty one, and a token minted anywhere else could never be consumed here. That is
+why PR #131's orchestrator held an in-process server instead of launching this one, and it
+made the process separation below true of the tests and not of the production path. The flag
+takes the path of a Unix socket serving another process's `ApprovalTokenStore`; only
+`consume` crosses it, never `mint`, so this module still never mints. See
+`src/agent/executor/token_bridge.py` for the mechanism and for the alternatives it was chosen
+over.
+
 Separating this into its own process is what makes Section 2's least-privilege claim
 structural. A prompt injection inside a retrieved chunk or an inventory `description` field
 cannot call a tool whose transport the reading process does not hold, however convincing
@@ -37,6 +47,7 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult
 
 from src.agent.executor.approval import ApprovalTokenStore
+from src.agent.executor.token_bridge import TokenConsumer, token_store_for_bridge
 from src.agent.inventory.build_db import DB_PATH, build_db
 from src.agent.mcp import tools
 from src.agent.mcp.budget import ToolCallBudget
@@ -50,8 +61,8 @@ WRITE_TOOL_NAMES = ("place_order",)
 def build_server(
     db_path: Path = DB_PATH,
     budget: ToolCallBudget | None = None,
-    token_store: ApprovalTokenStore | None = None,
-) -> tuple[MCPServer, ToolCallBudget, ApprovalTokenStore]:
+    token_store: TokenConsumer | None = None,
+) -> tuple[MCPServer, ToolCallBudget, TokenConsumer]:
     """Build one write-capable server, the budget its tool is charged against, and the
     approval-token store its tool validates against.
 
@@ -61,9 +72,16 @@ def build_server(
     rejected order is exactly the shape it is meant to stop.
 
     `token_store` follows the same injectable-with-a-default shape `budget` already has:
-    pass the same `ApprovalTokenStore` instance a later issue's orchestrator mints tokens
-    into, or omit it to get a fresh, empty store (every token unknown, useful standalone and
-    in tests that mint their own tokens against the returned store).
+    pass the same `ApprovalTokenStore` instance the orchestrator mints tokens into, or omit
+    it to get a fresh, empty store (every token unknown, useful standalone and in tests that
+    mint their own tokens against the returned store).
+
+    **It is typed as `TokenConsumer`, not `ApprovalTokenStore`, since Issue #132.** That
+    protocol carries `consume` and deliberately not `mint`, which is the whole of what this
+    server needs and the whole of what it should be able to do. `ApprovalTokenStore` (#124)
+    satisfies it unchanged; so does `token_bridge.RemoteTokenStore`, which is how a server
+    running as a *separate process* validates against the orchestrator's store instead of an
+    empty one of its own -- see `main()` and `src/agent/executor/token_bridge.py`.
     """
     budget = budget if budget is not None else ToolCallBudget()
     token_store = token_store if token_store is not None else ApprovalTokenStore()
@@ -101,13 +119,34 @@ def build_server(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db-path", type=Path, default=DB_PATH, help="inventory database path")
+    parser.add_argument(
+        "--token-bridge",
+        default=None,
+        help=(
+            "path to a Unix socket serving the approval-token store of the process that "
+            "minted the token (Issue #132). Omit to validate against this process's own "
+            "fresh, empty store, in which case every token is unknown."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run the write server over stdio.
+
+    **`--token-bridge` is what makes this process usable by a real orchestrator** (Issue
+    #132). Without it this server validates against a store it built itself, which is empty
+    and stays empty -- nothing here mints -- so every order is refused as an unknown token.
+    That was the whole reason PR #131's orchestrator could not use a subprocess at all and
+    had to hold an in-process server instead. With it, the store is the orchestrator's own:
+    the token is still minted out-of-band by a human approval, in a different process, and
+    only `consume` crosses the boundary.
+    """
     args = parse_args(argv)
     build_db(args.db_path)
-    server, _, _ = build_server(db_path=args.db_path)
+    server, _, _ = build_server(
+        db_path=args.db_path, token_store=token_store_for_bridge(args.token_bridge)
+    )
     server.run("stdio")
 
 

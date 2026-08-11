@@ -13,14 +13,20 @@ that the read-only clients (Agent A, and Agent B which holds no tools at all) ca
 test_the_answerers_own_session_cannot_reach_place_order` and `test_agent_mcp_servers.py::
 test_a_client_of_the_read_only_server_cannot_reach_place_order`; it is not duplicated here.
 
-A real, successful order, and each of Issue #125's four token-rejection reasons, cannot be
-shown over the real subprocess `write_tools()` opens -- that subprocess's `ApprovalTokenStore`
-is its own, fresh and empty, built inside `write_server.py`'s unmodified `main()`, and nothing
-this test process mints is visible to it (the same wall `test_agent_mcp_servers.py`'s module
-docstring already documents). Those tests instead call `execute_order` directly against
-`write_server.build_server()`'s in-process `MCPServer`, sharing a real `ApprovalTokenStore`
-with the test -- see the module docstring's note on why `execute_order` takes a session rather
-than opening its own.
+A real, successful order, and each of Issue #125's four token-rejection reasons, are shown
+here against `write_server.build_server()`'s in-process `MCPServer`, sharing a real
+`ApprovalTokenStore` with the test -- see `client.py`'s docstring on why `execute_order` takes
+a session rather than opening its own.
+
+**Why in-process here, when Issue #132 made the subprocess route work.** When this module was
+written it was the only route: the subprocess built its own empty store and nothing a test
+minted was visible to it. #132's `--token-bridge` removed that wall, and
+`tests/test_agent_token_bridge.py` proves a real token now crosses a real process boundary.
+These tests stay in-process anyway, because what they are about is `execute_order`'s own
+behaviour -- that it returns `OrderPlaced` for a good order and `OrderRejected` carrying the
+tool's reason for each rejection -- and a shared in-process store is the shortest path to
+that. Spawning a subprocess and a socket per case would test the bridge a second time and
+`execute_order` no better.
 """
 from __future__ import annotations
 
@@ -191,12 +197,18 @@ def test_bearing_id_is_optional_and_defaults_to_none():
 def test_the_entry_points_only_content_carrying_parameter_is_the_fixed_schema_record():
     """The entry point's only parameter that could carry a `Draft`, a question, or any other
     free text is `order: OrderRequest` -- every other parameter is infrastructure (`db_path`,
-    a session), asserted by resolved type hints rather than by behaviour."""
+    `token_bridge`, a session), asserted by resolved type hints rather than by behaviour.
+
+    The infrastructure set is enumerated rather than pattern-matched **so that adding a
+    parameter to this entry point cannot pass silently** -- it must be looked at and named
+    here. `token_bridge` (Issue #132) was added that way: it is a `Path` to a Unix socket,
+    a rendezvous address that carries no order content and no credential.
+    """
     hints = typing.get_type_hints(execute_order_via_write_server)
 
     assert hints["order"] is OrderRequest
     other = {name: hint for name, hint in hints.items() if name not in ("order", "return")}
-    assert other == {"db_path": Path | None}
+    assert other == {"db_path": Path | None, "token_bridge": Path | None}
 
 
 def test_the_module_imports_nothing_from_the_answerer_or_the_critic():

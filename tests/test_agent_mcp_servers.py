@@ -32,6 +32,14 @@ place_order_and_only_that` below asserts what *can* be shown across a real proce
 without that wiring -- that the tool is genuinely reachable and executes real validation
 (an `unknown`-token rejection), not that a full order can be placed through a bare subprocess
 with no orchestrator behind it. Flagged here rather than silently narrowed elsewhere.
+
+**Issue #132 lifted that restriction, and these tests deliberately keep exercising the
+un-bridged shape.** `write_server.py` now takes `--token-bridge`, so a token minted in one
+process *can* be consumed by a subprocess -- `tests/test_agent_token_bridge.py` is where that
+is proved. `_probe` below still launches the server without the flag, which is exactly the
+"its own fresh, empty store" behaviour described above, and asserting it stays that way is
+worth a test in its own right: the bridge must be something a caller opts into, not the
+default a bare `python -m src.agent.mcp.write_server` silently acquires.
 """
 from __future__ import annotations
 

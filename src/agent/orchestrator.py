@@ -83,23 +83,33 @@ parameter and this is simply one more. Two consequences a reader should not have
   `NOT NULL` (Section 7) is a real structural control over *whether an approval happened*; it
   is not evidence about *who* approved, and this module does not pretend otherwise.
 
-**Why the write server is built in-process here, and why that is a limitation and not a
-preference.** `write_server.py`'s `main()` builds its own fresh, empty `ApprovalTokenStore`,
-and there is no argument or environment seam to inject one -- so a token minted in this
-process can never be consumed by a `python -m src.agent.mcp.write_server` subprocess. #126's
-client anticipated exactly this and factored `execute_order(order, session)` to take any
-MCP-shaped session for the purpose; `build_executor()` below supplies
-`write_server.build_server()`'s in-process server sharing this module's store.
+**The executor runs in a real subprocess, over real stdio (Issue #132).** This was the one
+limitation PR #131 shipped with and flagged rather than worked around: `write_server.py`'s
+`main()` built its own fresh, empty `ApprovalTokenStore` with no seam to inject one, so a
+token minted here could never be consumed there, and the only working option was an
+in-process server sharing this module's memory. #132 closed it. `executor_session()` below
+starts a Unix-socket bridge serving *this* process's store, launches the write server through
+#126's `write_tools()`, and hands it the socket path -- so the store stays here, in memory,
+dying with the process exactly as Issue #124 built it, and only `consume` crosses the
+boundary. `mint` is not reachable from the subprocess at all. The mechanism, and the four
+alternatives it was chosen over, are documented in `src/agent/executor/token_bridge.py`.
 
-The security consequence is smaller than it first looks but is worth stating plainly rather
-than leaving to a reader. Section 2's process boundary exists so that *the reading agent*
-cannot reach `place_order`: Agent A's model is handed only `readonly_tools()`' four tools, and
-that is unchanged here -- an injected instruction still cannot emit a `tool_use` block for a
-tool that is not in its request. What is given up is that `place_order` now lives in the same
-OS process as the orchestrator rather than behind a pipe. **Named condition for revisiting:**
-a `--token-store`-style seam on `write_server.py` (or an orchestrator-owned launcher that
-mints into the subprocess) would restore the subprocess boundary for the executor; both mean
-modifying `write_server.py`, which Issue #127 excludes, so it is flagged here instead.
+**What that boundary is and is not worth, stated plainly rather than left to a reader.**
+Section 2's process boundary exists so that *the reading agent* cannot reach `place_order` --
+and that protection was never the thing at risk here, because Agent A's model is handed only
+`readonly_tools()`' four tools and an injected instruction cannot emit a `tool_use` block for
+a tool that is not in its request. That was true before #132 and is true after. What #132 buys
+is a **second, independent layer** under the same claim -- the separation no longer rests
+solely on which list a tool ended up in, which is this repository's established posture for
+anything load-bearing (`src/serving/single_worker.py`'s two independent refusals, #84; Section
+5's token validation alongside `orders.approved_by`'s `NOT NULL`). It also buys OS-level
+memory isolation between this process, which holds the API key and the token store, and the
+only code in the system that writes to the inventory database. It does **not** protect against
+a compromised orchestrator, and nothing could: this process legitimately mints.
+
+`build_executor()` remains for the in-process case, which is still what tests want when they
+need to mint into and inspect the same store; `run_from_response_async` accepts an injected
+session for that reason.
 
 **Fail-closed, everywhere a decision is read.** Section 10 case 5's whole point is that no
 text the model reads can produce a valid approval; this module extends the same posture to the
@@ -117,9 +127,10 @@ here opens a file.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 from src.agent.critic.grounding import GROUNDED, PARTIAL, GroundedResponse
 from src.agent.executor.approval import ApprovalTokenStore
@@ -129,7 +140,9 @@ from src.agent.executor.client import (
     OrderRequest,
     ToolCallSession,
     execute_order,
+    write_tools,
 )
+from src.agent.executor.token_bridge import serve_token_store
 from src.agent.inventory.build_db import DB_PATH, build_db
 from src.agent.mcp.write_server import build_server as build_write_server
 from src.agent.pipeline import answer_and_verify_async
@@ -320,14 +333,40 @@ def build_approval(
     )
 
 
-# --- The executor's session (see the module docstring on why this is in-process) ----------
+# --- The executor's session ---------------------------------------------------------------
+
+
+@asynccontextmanager
+async def executor_session(
+    store: ApprovalTokenStore, *, db_path: Path | None = None
+) -> AsyncIterator[ToolCallSession]:
+    """**The production path (Issue #132): a real write-server subprocess over real stdio.**
+
+    `store` stays here, in this process, and only `consume` crosses the boundary -- over a
+    Unix socket that exists for the duration of this block and is handed to the subprocess as
+    a rendezvous path, never as a credential. `src/agent/executor/token_bridge.py` holds the
+    mechanism and the alternatives it was chosen over.
+
+    The ordering matters and is not incidental: the bridge is serving before the subprocess
+    is launched, so the server can validate on its very first call rather than racing a
+    socket that does not exist yet.
+    """
+    async with serve_token_store(store) as socket_path:
+        async with write_tools(db_path=db_path, token_bridge=socket_path) as session:
+            yield session
 
 
 def build_executor(
     *, db_path: Path | None = None, token_store: ApprovalTokenStore | None = None
 ) -> tuple[ToolCallSession, ApprovalTokenStore]:
-    """The write server and the `ApprovalTokenStore` it validates against, sharing one
-    process so a token minted here can actually be consumed there.
+    """The write server and the `ApprovalTokenStore` it validates against, in **one process**.
+
+    No longer the default path -- `executor_session` above is (Issue #132). This is kept
+    because it remains the simplest way to hand a test a server and a store it can both mint
+    into and inspect, which is what `tests/test_agent_orchestrator.py`,
+    `tests/test_agent_executor_client.py` and `tests/test_agent_mcp_servers.py` all rely on,
+    and because `run_from_response_async` still accepts an injected session for exactly that
+    reason.
 
     `build_db` is called for the same reason both servers' `main()` calls it (Issue #101): a
     fresh clone gets a seeded database rather than a tool that reports the inventory as
@@ -375,14 +414,14 @@ async def run_from_response_async(
     if not isinstance(outcome, Approved):
         return OrchestrationResult(response=response, gate_reached=True, approval=outcome)
 
-    if session is None:
-        session, token_store = build_executor(db_path=db_path, token_store=token_store)
-    elif token_store is None:
+    if session is not None and token_store is None:
         raise ValueError("a caller-supplied session must come with the token store it shares")
+
+    store = token_store if token_store is not None else ApprovalTokenStore()
 
     # Minted only now: after the human approved, scoped to exactly what they approved
     # (Section 5's "scoped to one order"), and never earlier in the flow.
-    token = token_store.mint(
+    token = store.mint(
         outcome.part_number, outcome.quantity, outcome.bearing_id, outcome.approved_by
     )
     order = OrderRequest(
@@ -393,7 +432,14 @@ async def run_from_response_async(
         bearing_id=outcome.bearing_id,
     )
 
-    execution = await execute_order(order, session)
+    if session is not None:
+        execution = await execute_order(order, session)
+    else:
+        # Issue #132's default: a real subprocess, with `store` staying in this process and
+        # only `consume` crossing the boundary.
+        async with executor_session(store, db_path=db_path) as subprocess_session:
+            execution = await execute_order(order, subprocess_session)
+
     return OrchestrationResult(
         response=response, gate_reached=True, approval=outcome, execution=execution
     )

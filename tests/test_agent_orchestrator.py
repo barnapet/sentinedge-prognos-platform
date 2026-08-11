@@ -521,6 +521,61 @@ def test_a_malformed_parameter_at_the_real_prompt_writes_no_row(executor, db_pat
 
 
 # --------------------------------------------------------------------------------------
+# The production path: a real write-server subprocess (Issue #132)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_default_path_places_the_order_through_a_real_subprocess(db_path):
+    """**No injected session.** `run_from_response_async` falls through to
+    `executor_session`, which serves this process's token store over a Unix socket and
+    launches `python -m src.agent.mcp.write_server` as a real OS process.
+
+    Before Issue #132 this could not work at all -- the subprocess built its own empty store
+    and refused every token as unknown -- which is why PR #131 had to hold an in-process
+    server. The row landing in the database is the proof it works now.
+    """
+    part = _real_part(db_path)
+    store = SpyTokenStore()
+    approved = Approved(
+        part_number=part,
+        quantity=2,
+        requested_by="tech-01",
+        approved_by="supervisor-02",
+        bearing_id="2nd_test-demo",
+    )
+
+    result = asyncio.run(
+        run_from_response_async(
+            _response(),
+            prompt=SpyPrompt(approved),
+            token_store=store,
+            db_path=db_path,
+        )
+    )
+
+    assert isinstance(result.execution, OrderPlaced), getattr(result.execution, "reason", None)
+    assert store.mint_calls == [(part, 2, "2nd_test-demo", "supervisor-02")]
+    assert _orders(db_path) == [(part, 2, "2nd_test-demo", "tech-01", "supervisor-02")]
+
+
+def test_the_default_path_declines_without_launching_anything(db_path):
+    """A decline must not pay for a subprocess or a socket it never needed -- the gate
+    returns before the executor session is entered at all."""
+    store = SpyTokenStore()
+
+    result = asyncio.run(
+        run_from_response_async(
+            _response(), prompt=SpyPrompt(Declined()), token_store=store, db_path=db_path
+        )
+    )
+
+    assert isinstance(result.approval, Declined)
+    assert result.execution is None
+    assert store.mint_calls == []
+    assert _orders(db_path) == []
+
+
+# --------------------------------------------------------------------------------------
 # Section 10 case 5: approval extraction, end to end
 # --------------------------------------------------------------------------------------
 
