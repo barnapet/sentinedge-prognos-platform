@@ -8,6 +8,11 @@ upserted exactly one chunk carrying the literal string into the real `prognos_do
 
 This module is the gate. No API key, no network, no Qdrant: the loaders read tracked files and
 these are string checks over what they emit.
+
+Not this module: Section 8's tier-1 "every `decision_doc` chunk's text is verbatim in its
+`source_ref` file" check is a different assertion (fidelity, not injection hygiene) and lives in
+`tests/test_agent_rag_loaders.py::test_decision_doc_chunks_are_verbatim_in_their_source_file`
+(Issue #138 corrected a mapping table that had pointed here instead).
 """
 from __future__ import annotations
 
