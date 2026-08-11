@@ -55,6 +55,21 @@ chore/gitignore
 This produces a readable history: anyone reviewing the repo can follow *why* each change
 happened, not just *what* changed.
 
+## Issue Template
+
+Issue bodies follow a four-header shape — Context, Task, Constraints, Output:
+
+- **Context** — why the issue exists: the background, the problem being addressed, and
+  pointers to related issues or decisions it builds on (or deliberately doesn't re-open).
+- **Task** — the concrete, usually numbered, list of what to build.
+- **Constraints** — explicit scope limits: what not to touch, what not to re-decide, and any
+  process rules (e.g. "prepare the PR and stop; wait for explicit approval").
+- **Output** — what the resulting PR must contain and confirm, so "done" is checkable rather
+  than a judgment call.
+
+This is a quick reference for the shape that's already been used consistently, not a rigid
+template to fill mechanically.
+
 ## Notebook Outputs
 
 Committed notebooks (`notebooks/*.ipynb`) **keep their execution outputs** — plots, printed
@@ -88,7 +103,16 @@ v1.0-mvp
 Add a short release note per tag summarizing what was completed and any deviations from the
 PRD's original plan — deviations are fine, but should be documented, not silent.
 
+This list covers the original MVP's milestones only — it's not an exhaustive list going
+forward. Later phases (M7 and beyond) may introduce their own tags as they complete.
+
 ## Definition of Done
 
-Before closing an Issue or merging a milestone PR, check it against the Acceptance Criteria in
-`docs/PRD.md` Section 10 — don't mark something done based on "it runs on my machine."
+Before closing an Issue or merging a milestone PR, check it against the Acceptance Criteria
+that apply to its phase — don't mark something done based on "it runs on my machine."
+
+- For issues within the original MVP's milestones (M1–M6, see `docs/PRD.md` Section 11), check
+  against the Acceptance Criteria in `docs/PRD.md` Section 10, as before.
+- For issues in a later phase (M7 and beyond), `docs/PRD.md` Section 10 doesn't describe them —
+  check against that phase's own design doc instead (e.g. M7-Agent-Layer against
+  `docs/agent_design.md`).
