@@ -27,16 +27,19 @@ from src.agent.mcp.results import (
     INVENTORY_UNAVAILABLE,
     SERVICE_UNREACHABLE,
     SOURCE_TYPES,
+    TRAJECTORY_UNUSABLE,
     payload_of,
     source_block,
 )
 from src.agent.mcp.tools import (
     check_inventory,
+    find_similar_historical_pattern,
     get_bearing_status,
     place_order,
     predict_health_state,
     search_documentation,
 )
+from src.agent.similarity.archive import CAVEAT, DTW_CHANNELS, NO_MATCH_THRESHOLD
 from src.agent.rag.retrieval import RetrievedChunk
 
 # A port nothing is listening on. 9 is the standard "discard" port and is not bound in CI;
@@ -64,6 +67,39 @@ PREDICT_BODY = {
 }
 
 
+def history_body(channels: dict[str, list[float]], **overrides) -> dict:
+    """A `GET /monitoring/history/{bearing_id}` body, in the endpoint's exact shape."""
+    n_points = len(next(iter(channels.values()))) if channels else 0
+    return {
+        "bearing_id": "2nd_test-demo",
+        "found": True,
+        "file_count": max(n_points, 120),
+        "baseline_status": "stable",
+        "retained": 50,
+        "channels": channels,
+        "n_points": n_points,
+        **overrides,
+    }
+
+
+def archived_window(experiment: str = "2nd_test", start: int = 800, length: int = 50) -> dict:
+    """A real 50-point stretch of a real archived trajectory, in channel form.
+
+    Taken from the committed archive rather than invented, so the distance the tool
+    computes from it is a real distance -- these tests then assert on the *envelope and
+    decision*, with `tests/test_agent_similarity_archive.py` owning the metric itself.
+    """
+    from src.agent.similarity.archive import DTW_CHANNELS, load_archive
+
+    trajectory = next(t for t in load_archive() if t.experiment == experiment)
+    chunk = trajectory.raw_matrix[start : start + length]
+    return {channel: list(chunk[:, i]) for i, channel in enumerate(DTW_CHANNELS)}
+
+
+def default_history_body() -> dict:
+    return history_body(archived_window())
+
+
 # --------------------------------------------------------------------------------------
 # A real localhost stand-in for the serving API
 # --------------------------------------------------------------------------------------
@@ -78,9 +114,10 @@ class _FakeServingAPI:
     the one thing that must never work.
     """
 
-    def __init__(self, status: int = 200):
+    def __init__(self, status: int = 200, history_body: dict | None = None):
         self.status = status
         self.requests: list[tuple[str, dict | None]] = []
+        self.history_body = history_body if history_body is not None else default_history_body()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -94,7 +131,13 @@ class _FakeServingAPI:
 
             def do_GET(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler's naming
                 outer.requests.append((self.path, None))
-                self._respond(DRIFT_BODY)
+                # Routed rather than answered uniformly, since #140 added a second GET the
+                # tools call. `self.path` is the raw request line, so a test can assert on
+                # exactly what went over the wire, percent-encoding included.
+                if self.path.startswith("/monitoring/history/"):
+                    self._respond(outer.history_body)
+                else:
+                    self._respond(DRIFT_BODY)
 
             def do_POST(self) -> None:  # noqa: N802
                 length = int(self.headers.get("Content-Length", "0"))
@@ -667,3 +710,145 @@ def test_a_scope_mismatched_token_is_rejected_and_orders_is_unchanged(db_path):
     )
     assert retried.is_error is False
     assert _order_count(db_path) == 1
+
+
+# --------------------------------------------------------------------------------------
+# find_similar_historical_pattern (Issue #140, `docs/agent_design.md` Section 12)
+# --------------------------------------------------------------------------------------
+
+
+def test_find_similar_historical_pattern_returns_section_12s_output_shape(serving_api):
+    result = find_similar_historical_pattern("2nd_test-demo", base_url=serving_api.url)
+    payload = payload_of(result)
+
+    assert result.is_error is False
+    assert payload["source"]["source_type"] == "trajectory_match"
+    assert payload["source"]["source_id"].startswith("trajectory_archive@")
+
+    data = payload["data"]
+    # Section 12's contract: these two are present on every successful result.
+    assert data["n_references"] == 3
+    assert data["caveat"] == CAVEAT
+    assert data["query_window"] == 50
+    assert len(data["ranked"]) == 3
+    for row in data["ranked"]:
+        assert set(row) == {
+            "experiment",
+            "normalized_distance",
+            "matched_index_range",
+            "label_at_match",
+        }
+
+
+def test_a_window_taken_from_an_archived_experiment_matches_that_experiment(serving_api):
+    """End to end through the HTTP boundary: the query is a real stretch of `2nd_test`, so
+    the tool must name `2nd_test`, at its own indices, at distance ~0."""
+    result = find_similar_historical_pattern("2nd_test-demo", base_url=serving_api.url)
+    best = payload_of(result)["data"]["best_match"]
+
+    assert best["experiment"] == "2nd_test"
+    assert best["matched_index_range"] == [800, 849]
+    assert best["normalized_distance"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_shape_unlike_anything_archived_gets_no_best_match():
+    """Section 12's refusal to always name a winner. The ranking is still returned, so the
+    answer can say what it was closest to *and* that it was not close enough."""
+    alternating = [float((-1) ** i) for i in range(50)]
+    body = history_body({channel: alternating for channel in DTW_CHANNELS})
+
+    with _FakeServingAPI(history_body=body) as api:
+        data = payload_of(find_similar_historical_pattern("odd", base_url=api.url))["data"]
+
+    assert data["best_match"] is None
+    assert "no reference within threshold" in data["no_match_reason"]
+    assert len(data["ranked"]) == 3
+    assert data["ranked"][0]["normalized_distance"] > NO_MATCH_THRESHOLD
+
+
+def test_an_untracked_bearing_is_a_structured_not_found_not_an_error():
+    """Section 10 case 1: an untracked bearing must arrive as a fact about which bearings
+    exist, never as a comparison against a trajectory nobody recorded."""
+    body = {"bearing_id": "ghost", "found": False, "tracked_bearings": ["a", "b"]}
+
+    with _FakeServingAPI(history_body=body) as api:
+        result = find_similar_historical_pattern("ghost", base_url=api.url)
+
+    data = payload_of(result)["data"]
+    assert result.is_error is False
+    assert data["found"] is False
+    assert data["tracked_bearings"] == ["a", "b"]
+    assert "best_match" not in data
+    assert data["caveat"] == CAVEAT
+
+
+def test_a_bearing_with_too_little_history_refuses_rather_than_comparing():
+    """Not an error -- the honest answer is "ask again later". Inventing a comparison from
+    six points would be worse than saying so."""
+    body = history_body({channel: [1.0, 2.0, 3.0] for channel in DTW_CHANNELS})
+
+    with _FakeServingAPI(history_body=body) as api:
+        result = find_similar_historical_pattern("new-bearing", base_url=api.url)
+
+    data = payload_of(result)["data"]
+    assert result.is_error is False
+    assert data["best_match"] is None
+    assert data["ranked"] == []
+    assert "at least 10" in data["no_match_reason"]
+
+
+def test_a_trajectory_with_a_missing_reading_is_refused_not_interpolated():
+    channels = archived_window()
+    channels["kurtosis"] = [None] + channels["kurtosis"][1:]
+    body = history_body(channels)
+
+    with _FakeServingAPI(history_body=body) as api:
+        result = find_similar_historical_pattern("holey", base_url=api.url)
+
+    assert result.is_error is True
+    assert TRAJECTORY_UNUSABLE in payload_of(result)["error"]
+
+
+def test_an_unreachable_serving_api_is_a_readable_failure():
+    result = find_similar_historical_pattern("2nd_test-demo", base_url=CLOSED_PORT_URL)
+
+    assert result.is_error is True
+    payload = payload_of(result)
+    assert payload["error"] == SERVICE_UNREACHABLE
+    # The envelope still names which source failed (`results.py`'s one-shape rule).
+    assert payload["source"]["source_type"] == "trajectory_match"
+
+
+def test_a_rejecting_serving_api_is_reported_as_a_rejection_not_as_unreachable():
+    """A service that answered is up. Calling that unreachable would send a technician to
+    check the wrong thing -- the distinction #110 drew for the other tools."""
+    with _FakeServingAPI(status=500) as api:
+        result = find_similar_historical_pattern("2nd_test-demo", base_url=api.url)
+
+    assert result.is_error is True
+    assert "HTTP 500" in payload_of(result)["error"]
+
+
+def test_a_window_below_the_minimum_is_refused_before_any_request_is_made(serving_api):
+    result = find_similar_historical_pattern("2nd_test-demo", window=2, base_url=serving_api.url)
+
+    assert result.is_error is True
+    assert "at least 10" in payload_of(result)["error"]
+    assert serving_api.requests == []
+
+
+def test_the_bearing_id_is_percent_encoded_into_the_request_path(serving_api):
+    """`bearing_id` is the one tool argument that reaches a URL *path*, and it can come
+    from a model. A slash in it must not re-point the request at another route."""
+    find_similar_historical_pattern("odd/name", base_url=serving_api.url)
+
+    (path, _), = serving_api.requests
+    assert path.startswith("/monitoring/history/odd%2Fname")
+    assert "/monitoring/history/odd/name" not in path
+
+
+def test_the_requested_window_is_passed_through_to_the_endpoint(serving_api):
+    find_similar_historical_pattern("2nd_test-demo", window=30, base_url=serving_api.url)
+
+    (path, _), = serving_api.requests
+    assert "window=30" in path

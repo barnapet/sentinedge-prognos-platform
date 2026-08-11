@@ -27,9 +27,9 @@ from typing import Any
 
 from mcp.types import CallToolResult, TextContent
 
-# `docs/agent_design.md` Section 2's vocabulary, verbatim and closed. `trajectory_match`
-# is listed because Section 2 lists it; nothing mints it yet (see the registry note in
-# `readonly_server.py` about `find_similar_historical_pattern`).
+# `docs/agent_design.md` Section 2's vocabulary, verbatim and closed. `trajectory_match` is
+# minted by `find_similar_historical_pattern` as of Issue #140; every other value has had a
+# tool behind it since #110.
 SOURCE_TYPES = frozenset(
     {"live_endpoint", "decision_doc", "public_reference", "inventory", "trajectory_match"}
 )
@@ -42,6 +42,8 @@ SERVICE_UNREACHABLE = "the prediction service is not reachable"
 DOCS_INDEX_UNREACHABLE = "the documentation index is not reachable"
 INVENTORY_UNAVAILABLE = "the inventory database is not available"
 ORDER_FAILED = "the order could not be placed"
+ARCHIVE_UNAVAILABLE = "the historical trajectory archive is not available"
+TRAJECTORY_UNUSABLE = "this bearing's recorded trajectory could not be compared"
 
 
 def source_block(source_type: str, source_id: str) -> dict[str, str]:

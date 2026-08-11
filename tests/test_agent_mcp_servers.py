@@ -97,16 +97,18 @@ def _no_hits(*args, **kwargs):
 # --------------------------------------------------------------------------------------
 
 
-def test_the_read_only_server_registers_exactly_the_four_read_only_tools(db_path):
+def test_the_read_only_server_registers_exactly_the_five_read_only_tools(db_path):
     server, _ = build_readonly_server(
         base_url=CLOSED_PORT_URL, db_path=db_path, search=_no_hits
     )
     names = [tool.name for tool in asyncio.run(server.list_tools())]
 
     assert names == list(READONLY_TOOL_NAMES)
-    assert "find_similar_historical_pattern" not in names, (
-        "Section 12's trajectory archive does not exist yet; Issue #110 forbids stubbing it"
+    assert "find_similar_historical_pattern" in names, (
+        "Section 2's fifth read-only tool, registered as of Issue #140 now that Section "
+        "12's trajectory archive exists and is committed"
     )
+    assert len(names) == 5
 
 
 def test_the_write_server_registers_place_order_and_nothing_else(db_path):

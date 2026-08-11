@@ -53,6 +53,18 @@ models/*
 # binary. Same "large binaries only" reasoning as the model artifact above; this file is
 # ~700 bytes. Reasoning: docs/monitoring_design.md Section 3.
 !models/drift_baseline.json
+# Deliberate exception (Issue #140): the trajectory archive Section 12 of
+# docs/agent_design.md compares live bearings against -- 9,464 rows x 8 columns, 443 KB,
+# measured rather than estimated. Same "large binaries only" reasoning as the two above.
+# Unlike them this one is not human-diffable, and that was weighed rather than waved past:
+# the same rows as CSV are over a megabyte and no more reviewable in a diff, since nobody
+# reads a 9,464-line numeric diff either way (Section 12's own argument). What makes it
+# auditable is the manifest beside it, which carries a hash of the *data* as well as of the
+# file -- so a re-encode on a different pyarrow build is distinguishable from a changed
+# number. It is committed for the reason #86 committed real signal: regenerating it needs
+# the 6.2 GB raw dataset, so without it a fresh clone has no reference data at all.
+!models/trajectory_archive.parquet
+!models/trajectory_archive_manifest.json
 
 # --- Docker ---
 *.log

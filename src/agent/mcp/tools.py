@@ -35,10 +35,12 @@ from src.agent.inventory.orders import (
 )
 from src.agent.inventory.query import find_parts
 from src.agent.mcp.results import (
+    ARCHIVE_UNAVAILABLE,
     DOCS_INDEX_UNREACHABLE,
     INVENTORY_UNAVAILABLE,
     ORDER_FAILED,
     SERVICE_UNREACHABLE,
+    TRAJECTORY_UNUSABLE,
     failed,
     ok,
 )
@@ -49,11 +51,20 @@ from src.agent.mcp.serving_client import (
     ServingRejected,
     ServingUnreachable,
     get_drift,
+    get_history,
     post_predict,
 )
 from src.agent.rag.index import COLLECTION_NAME
 from src.agent.rag.retrieval import DEFAULT_LIMIT, RetrievedChunk
 from src.agent.rag.retrieval import search as default_search
+from src.agent.similarity.archive import (
+    CAVEAT,
+    archive_source_id,
+    best_match_or_none,
+    load_archive,
+    query_matrix,
+    rank_against_archive,
+)
 
 INVENTORY_SOURCE_ID = "data/agent/inventory.db"
 # `search_documentation` queries a live Qdrant service at request time, so `live_endpoint`
@@ -65,6 +76,17 @@ INVENTORY_SOURCE_ID = "data/agent/inventory.db"
 DOCS_SOURCE_ID = f"SEARCH {COLLECTION_NAME}"
 
 SearchFn = Callable[..., Sequence[RetrievedChunk]]
+
+# `docs/agent_design.md` Section 12's "the last 50 requests".
+QUERY_WINDOW = 50
+# Below `src.features.extraction.ROLLING_WINDOW` (10) a trajectory is shorter than the
+# smoothing window that produced it, so it carries less than one window's worth of
+# independent shape -- a distance computed from it would be a number without a meaning.
+MIN_QUERY_WINDOW = 10
+# Used only when the archive itself could not be read, so its content hash -- which the
+# real `source_id` is derived from -- is exactly what is unavailable. The envelope still
+# needs a `source_id` to say *which* source failed (`results.py`'s "one shape" rule).
+ARCHIVE_SOURCE_ID_FALLBACK = "trajectory_archive@unavailable"
 
 # Plain-language rejections for each of approval.py's four closed `TokenError` reasons
 # (Issue #124). Keyed off the module's own constants rather than the literal strings, so a
@@ -245,6 +267,129 @@ def search_documentation(
         "live_endpoint",
         DOCS_SOURCE_ID,
         {"query": query, "result_count": len(results), "results": results},
+    )
+
+
+def trajectory_source_id() -> str:
+    """The archive's citable id, or a fallback when the archive cannot be read.
+
+    Needed outside the tool body too: `readonly_server.py` charges the budget *before*
+    running the body, and that refusal envelope still has to name a source. Never raises,
+    because a missing artifact must reach the model as a readable failure rather than as
+    `Error executing tool ...` (`results.py`'s rule).
+    """
+    try:
+        return archive_source_id()
+    except (OSError, ValueError, KeyError):
+        return ARCHIVE_SOURCE_ID_FALLBACK
+
+
+def find_similar_historical_pattern(
+    bearing_id: str,
+    window: int = QUERY_WINDOW,
+    *,
+    base_url: str = DEFAULT_BASE_URL,
+) -> CallToolResult:
+    """Rank a live bearing's recent trajectory against the three archived experiments
+    (`docs/agent_design.md` Section 12, Issue #140).
+
+    Two halves, from two places: the query is the bearing's last `window` values of
+    Section 12's three channels, read over HTTP from the running serving process; the
+    references are `models/trajectory_archive.parquet`, committed. Neither half is invented
+    when it is missing, which is what the four non-error early returns below are for.
+
+    **`best_match` is `null` unless the closest reference clears the calibrated threshold.**
+    Section 12: "always returning a winner out of three is how 'most resembles' quietly
+    becomes a false claim about an unfamiliar bearing." `ranked` still carries all three
+    distances in that case, so the answer can say *what* it was closest to and that it was
+    not close enough -- a refusal with its evidence attached, not a blank.
+
+    `n_references` and `caveat` are present on every successful result, per Section 12's
+    output contract; the critic's risky-claim check (Section 6) needs the sample size to be
+    on the result rather than remembered.
+    """
+    source_id = trajectory_source_id()
+    try:
+        trajectories = load_archive()
+    except (OSError, ValueError, KeyError):
+        # No archive means no comparison. Reported as a failure rather than as an empty
+        # ranking: "nothing resembles this" and "I could not look" are different answers,
+        # and only one of them should reach a technician as information.
+        return failed("trajectory_match", source_id, ARCHIVE_UNAVAILABLE)
+
+    if window < MIN_QUERY_WINDOW:
+        return failed(
+            "trajectory_match",
+            source_id,
+            f"window must be at least {MIN_QUERY_WINDOW} points, got {window}",
+        )
+
+    try:
+        body = get_history(bearing_id, window, base_url=base_url)
+    except ServingUnreachable:
+        return failed("trajectory_match", source_id, SERVICE_UNREACHABLE)
+    except ServingRejected as exc:
+        return failed(
+            "trajectory_match",
+            source_id,
+            f"the prediction service rejected the request (HTTP {exc.status_code})",
+        )
+
+    if not body.get("found", False):
+        # Same structured not-found `get_bearing_status` returns, for the same reason
+        # (Section 10 case 1): an untracked bearing must arrive as a fact about which
+        # bearings exist, never as a comparison against a trajectory nobody recorded.
+        return ok(
+            "trajectory_match",
+            source_id,
+            {
+                "bearing_id": bearing_id,
+                "found": False,
+                "tracked_bearings": body.get("tracked_bearings", []),
+                "n_references": len(trajectories),
+                "caveat": CAVEAT,
+            },
+        )
+
+    channels = body.get("channels", {})
+    n_points = int(body.get("n_points", 0))
+    common = {
+        "bearing_id": bearing_id,
+        "found": True,
+        "n_references": len(trajectories),
+        "query_window": n_points,
+        "baseline_status": body.get("baseline_status"),
+        "caveat": CAVEAT,
+    }
+    if n_points < MIN_QUERY_WINDOW:
+        # A real bearing with too little history yet. Not an error -- the honest answer is
+        # "ask again later", and inventing a comparison from 6 points would be worse than
+        # saying so.
+        return ok(
+            "trajectory_match",
+            source_id,
+            {
+                **common,
+                "best_match": None,
+                "no_match_reason": (
+                    f"only {n_points} window(s) recorded for this bearing; at least "
+                    f"{MIN_QUERY_WINDOW} are needed for a shape comparison"
+                ),
+                "ranked": [],
+            },
+        )
+
+    try:
+        query = query_matrix(channels)
+        ranked = rank_against_archive(query, trajectories)
+    except (KeyError, ValueError) as exc:
+        return failed("trajectory_match", source_id, f"{TRAJECTORY_UNUSABLE}: {exc}")
+
+    best, no_match_reason = best_match_or_none(ranked)
+    return ok(
+        "trajectory_match",
+        source_id,
+        {**common, "best_match": best, "no_match_reason": no_match_reason, "ranked": ranked},
     )
 
 

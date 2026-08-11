@@ -43,12 +43,12 @@ READONLY_TOOL_NAMES = (
     "predict_health_state",
     "check_inventory",
     "search_documentation",
+    "find_similar_historical_pattern",
 )
 
-# `find_similar_historical_pattern` (Section 2's fifth read-only tool) registers here, once
-# `models/trajectory_archive.parquet` from Section 12 exists. Left unbuilt rather than
-# stubbed, per Issue #110: a stub over invented reference data would be a tool that answers
-# confidently from nothing.
+# Section 2's fifth read-only tool is registered as of Issue #140: Section 12's
+# `models/trajectory_archive.parquet` now exists and is committed, so the tool answers from
+# real reference data rather than the invented kind Issue #110 declined to stub.
 
 
 def build_server(
@@ -106,6 +106,21 @@ def build_server(
         'decision_doc' (this repository's docs) or 'public_reference'."""
         refusal = budget.guard("live_endpoint", DOCS_SOURCE_ID)
         return refusal or tools.search_documentation(query, limit, source_type, search=search)
+
+    @server.tool()
+    def find_similar_historical_pattern(
+        bearing_id: str, window: int = tools.QUERY_WINDOW
+    ) -> CallToolResult:
+        """Compare a bearing's recent trajectory against three archived bearing failures
+        from the NASA IMS lab rig, and report which it most resembles -- or that it
+        resembles none of them closely enough to say. Uses the shape of the last `window`
+        readings, not their absolute level. There are only three references, all from one
+        rig at one operating condition, so the result is a ranking among those three, not
+        evidence about bearings in general; report it that way."""
+        refusal = budget.guard("trajectory_match", tools.trajectory_source_id())
+        return refusal or tools.find_similar_historical_pattern(
+            bearing_id, window, base_url=base_url
+        )
 
     return server, budget
 

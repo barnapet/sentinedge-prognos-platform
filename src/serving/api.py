@@ -26,6 +26,7 @@ to touch this module's internals.
 """
 from __future__ import annotations
 
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, AsyncIterator
@@ -37,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from src.serving.drift import MONITORED_FEATURES
 from src.serving.features import OnlineFeatureExtractor
+from src.serving.state import TRAJECTORY_CHANNELS, TRAJECTORY_HISTORY
 from src.serving.model_notes import MODEL_NOTES
 from src.serving.single_worker import (
     DEFAULT_LOCK_PATH,
@@ -158,6 +160,57 @@ def create_app(
                 "predicted_class_counts": state.predicted_class_counts,
             }
         return {"bearings": bearings}
+
+    @app.get("/monitoring/history/{bearing_id}")
+    def monitoring_history(bearing_id: str, request: Request, window: int = TRAJECTORY_HISTORY):
+        """One bearing's recent `TRAJECTORY_CHANNELS` trajectory (Issue #140).
+
+        `docs/agent_design.md` Section 12's `find_similar_historical_pattern` compares "the
+        last 50 requests" of a live bearing against the committed trajectory archive, and
+        this is where those 50 come from -- read over HTTP by
+        `src/agent/mcp/serving_client.py`, exactly as every other agent-side read is, so
+        nothing in `src/agent/` imports this process's state (Section 2's constraint).
+
+        Read-only in the same sense `/monitoring/drift` is: it returns what `/predict`
+        already wrote and never advances a bearing.
+
+        An unknown `bearing_id` is a **200 with `found: false`**, not a 404, matching
+        `tools.get_bearing_status`'s structured not-found. A 404 would reach the agent as
+        `ServingRejected` -- "the service refused this request" -- when the truthful answer
+        is "nobody is tracking that bearing, and here is who is". Section 10 case 1 is
+        precisely the failure of inventing a state for an untracked bearing, and a caller
+        cannot avoid inventing one if the tool layer cannot tell those two cases apart.
+        """
+        if window <= 0:
+            raise HTTPException(422, "window must be a positive integer")
+        extractor: OnlineFeatureExtractor = request.app.state.extractor
+        if bearing_id not in extractor.store:
+            return {
+                "bearing_id": bearing_id,
+                "found": False,
+                "tracked_bearings": sorted(extractor.store),
+            }
+
+        state = extractor.store.get_or_create(bearing_id)
+        # Non-finite values are emitted as `null`, not as bare `NaN`. A degenerate signal
+        # (a constant window makes kurtosis and skewness 0/0) leaves `NaN` in this
+        # bearing's history, and `NaN` is not valid JSON -- serializing it raised here and
+        # left that bearing's history endpoint permanently 500ing, which is a worse failure
+        # than the one that caused it. `null` is readable, and the agent-side tool refuses
+        # to build a query out of one rather than computing a distance from a hole.
+        channels = {
+            channel: [value if math.isfinite(value) else None for value in values]
+            for channel, values in state.trajectory(window=window).items()
+        }
+        return {
+            "bearing_id": bearing_id,
+            "found": True,
+            "file_count": state.file_count,
+            "baseline_status": state.baseline_status,
+            "retained": TRAJECTORY_HISTORY,
+            "channels": channels,
+            "n_points": len(channels[TRAJECTORY_CHANNELS[0]]),
+        }
 
     @app.get("/monitoring", response_class=FileResponse)
     def monitoring_page() -> FileResponse:
