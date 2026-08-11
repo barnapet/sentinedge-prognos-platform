@@ -48,6 +48,23 @@ merge before branching, schedule permitting — stacking is sometimes necessary,
 source of both problems above, so treat it as a deliberate tradeoff each time, not a default
 (see #117, #118).
 
+**Local Python version vs. CI:** local dev runs whatever Python the machine defaults to (often
+newer than CI's pin), while `notebook-ci.yml` pins 3.11 — a gap that has already produced two
+invisible-locally-only-caught-by-CI bugs (`window_mean`'s Issue #82/#83 summation-order
+difference; `test_agent_token_bridge.py`'s Issue #132/#133 use of a 3.12-only `typing`
+internal). Before trusting a green local run on a change that's sensitive to interpreter
+version (floating-point summation order, anything from `typing`/stdlib version-gated
+behavior), run the suite under 3.11 locally:
+
+```
+uv run --python 3.11 --with-requirements requirements.txt -- pytest tests/ -v
+```
+
+`uv` (https://astral.sh/uv) fetches a standalone Python 3.11 build and an ephemeral,
+requirements.txt-driven environment on first use, without touching the project's normal
+pip + `.venv` workflow (`README.md`'s Setup section) or requiring `sudo` — Ubuntu's default
+package repos on this project's dev machines don't carry `python3.11`. See Issue #134.
+
 ## Scope discipline
 
 This project deliberately excludes (for MVP, see PRD Section 4): Kubernetes, full CI/CT/CD with
