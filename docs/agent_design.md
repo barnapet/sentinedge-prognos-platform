@@ -168,10 +168,10 @@ already-running FastAPI service (plus local file/DB reads); neither imports `src
 > (`get_bearing_status`, `predict_health_state`, `check_inventory`,
 > `search_documentation`) and `src/agent/mcp/write_server.py` (`place_order`, and nothing
 > else), each runnable as `python -m src.agent.mcp.<module>`. `find_similar_historical_pattern`
-> is deliberately **not** built: Section 12's `models/trajectory_archive.parquet` does not
-> exist yet, and a stub over invented reference data would be a tool that answers
-> confidently from nothing — `readonly_server.py` carries a one-line registry comment
-> marking where it goes. The approval gate and the agent loop that decides which agent
+> was deliberately **not** built in #110: Section 12's `models/trajectory_archive.parquet`
+> did not exist yet, and a stub over invented reference data would be a tool that answers
+> confidently from nothing. **Issue #140 built the archive and registered the tool**, so the
+> read-only server now carries all five; see Section 12's addendum. The approval gate and the agent loop that decides which agent
 > connects to which server are likewise out of that issue's scope; what exists is the
 > servers and their tools. Two additions were needed because their backing halves did not
 > exist yet: `src/agent/rag/retrieval.py` (Issue #99 built the index but nothing that
@@ -235,7 +235,7 @@ nothing new for the HTTP half.
 | `get_bearing_status` | `GET /monitoring/drift` | `bearing_id` (optional; omitted = all tracked bearings) | `file_count`, `baseline_status`, `drift_status`, per-feature `z`/`drifting`, `rms_ratio_latest`, `predicted_class_counts` |
 | `predict_health_state` | `POST /predict` | `bearing_id`, `signal` (raw window) | `label`, `baseline_status`, `drift_status`, `model_notes` |
 | `check_inventory` | `data/agent/inventory.db` (Section 7) | `part_number` (optional), `bearing_type` (optional) | matching part rows: description, `quantity_on_hand`, `unit_price_usd`, `lead_time_days`, `location` |
-| `find_similar_historical_pattern` | `models/trajectory_archive.parquet` (Section 12) | `bearing_id`, optional `window` | ranked matches against the three archived experiments, or an explicit no-match |
+| `find_similar_historical_pattern` | `models/trajectory_archive.parquet` (Section 12) + `GET /monitoring/history/{bearing_id}` for the query | `bearing_id`, optional `window` | ranked matches against the three archived experiments, or an explicit no-match |
 
 Plus `search_documentation`, the RAG retrieval tool (Section 4), on the same server.
 
@@ -920,6 +920,13 @@ table exception), heading-path construction, citation-ID extraction, numeric-lit
 tool argument validation, the inventory schema's constraints (oversell aborts; a NULL approval
 is rejected), the approval token's scoping/single-use/expiry logic, and Section 12's DTW
 implementation against hand-computed cases.
+
+> **The DTW half was built in Issue #140** (`tests/test_agent_similarity_dtw.py`), closing the
+> one in-scope gap Issue #138's tier-1 audit recorded. Every expected number in that file is
+> worked out by hand in the comment above its assertion — the band cases included — rather
+> than captured from a run, which is what Section 12's "testable against hand-computed small
+> cases" was for. `tests/test_agent_similarity_archive.py` covers the archive and the
+> ranking on real data; it needs no raw dataset, because the archive is committed.
 
 **Pass/fail:** ordinary `pytest`, all must pass, **and none may require an API key or network
 access**. This is a hard requirement, not a preference — it is what lets these run in the
@@ -1629,6 +1636,70 @@ Two properties are load-bearing:
 Because the result carries a `source_type` and a `source_id`, a claim like "this resembles
 `2nd_test`'s final degradation" is a **citable, checkable claim** under Section 6, exactly like
 a RAG chunk — not a free-floating assertion the grounding contract has no purchase on.
+
+### Addendum (Issue #140): three things this section left open, and how they were resolved
+
+Recorded here rather than left implicit in code, the same way #99 and #102 added findings
+without reopening a section's original decisions. **None of the decisions above changed.**
+Each of these is a question Section 12 did not answer, discovered while building it.
+
+**1. Where the live query comes from.** Section 12 says "the live query is short (the last 50
+requests)" and Section 2's table gives the input as `bearing_id` plus an optional `window` —
+but nothing in the built system retained those 50. `BearingState`'s `rms_history` /
+`skewness_history` are `ROLLING_WINDOW` (10) deep and hold *raw* `rms`/`skewness`, not the
+three derived channels; `GET /monitoring/drift` exposes only a scalar snapshot per bearing.
+
+**Resolved: `BearingState` gains a fourth bounded history**, `channel_history` — 50 values ×
+3 channels, written inline in the request path exactly where `drift_history` already is — and
+a new **`GET /monitoring/history/{bearing_id}`** serves it. The agent reads it over HTTP via
+`src/agent/mcp/serving_client.py`, so Section 2's "nothing in `src/agent/` imports
+`src/serving/`" constraint is untouched and Section 2's fixed tool input stays as declared.
+This is consistent with what was already fixed rather than a new kind of thing: the state is
+per-bearing, in-memory, bounded, and lost on restart exactly as `rms_history` is, so
+`docs/monitoring_design.md` Section 5's non-goal (durable historical trend storage) still
+holds — that declines *durability*, not a rolling window.
+
+An untracked bearing returns **200 with `found: false`**, not 404. A 404 would reach the tool
+as `ServingRejected` — "the service refused this request" — when the truthful answer is
+"nobody is tracking that bearing, and here is who is", and Section 10 case 1 is precisely the
+failure of inventing a state for an untracked bearing.
+
+**2. What "z-normalized per sequence" means in a *subsequence* search.** Two readings, and
+they are not stylistic variants — one of them produces a metric that does not work:
+
+| | window drawn from an experiment, matched against that same experiment |
+|---|---|
+| **Per candidate window** (adopted) | distance **0.0000**, at its own index range, on all three |
+| Whole reference, once over its full length | 0.998–1.398, at the **wrong location**, on all three |
+
+Under the whole-reference reading a **flat** query scored **0.105** — a better match than
+every real bearing window measured (1.06–1.50) — because normalizing a 6,324-row reference
+once parks its long `Normal` stretch near zero, so "no shape at all" becomes the best match in
+the archive. That is the level-dominates-shape failure this section's normalization exists to
+prevent, reintroduced at a different granularity.
+
+**Resolved: each candidate stretch of the reference is z-normalized against its own window
+statistics** (the standard z-normalized subsequence search), and the query against its own 50
+points. The rejected arm is kept reachable and tested rather than deleted — the convention
+`src/features/candidate_features.py` and `src/training/candidate_scalers.py` already set.
+
+**3. The no-match threshold: 1.37.** The rule was fixed before the numbers were read
+(`docs/evaluation_protocol.md`'s discipline): *the largest leave-one-out best-distance over
+all sampled held-out windows, rounded up to 2 decimals*. Query window 50, stride 10, 933
+windows total:
+
+| held out | windows | min | median | p90 | p95 | max |
+|---|---|---|---|---|---|---|
+| `1st_test` | 211 | 0.658 | 1.067 | 1.154 | 1.175 | 1.254 |
+| `2nd_test` | 94 | 0.307 | 0.981 | 1.101 | 1.135 | 1.194 |
+| `3rd_test` | 628 | 0.325 | 1.114 | 1.212 | 1.237 | 1.364 |
+
+**n = 3 is coarse, and this threshold is deliberately permissive.** It is a floor on what must
+*not* be refused — every sampled window is a real trajectory from a real bearing on this rig,
+so a threshold below the worst of them would refuse data of exactly the kind the archive is
+made of. It guards against a query whose shape resembles nothing here; it does not finely
+discriminate between the three references. Reproduce with
+`python -m src.agent.similarity.calibrate --stride 10 --probe`.
 
 ## 13. Non-goals
 

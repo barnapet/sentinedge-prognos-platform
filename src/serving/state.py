@@ -29,6 +29,18 @@ existing `observe()`/request-path methods -- no lock, no background task, per th
 own reasoning: adding one here would claim a level of concurrency safety this single-process,
 in-memory design does not otherwise provide.
 
+Issue #140 adds a third such field on identical terms: `channel_history`, the last
+`TRAJECTORY_HISTORY` values of `docs/agent_design.md` Section 12's three DTW channels. That
+section's `find_similar_historical_pattern` compares "the last 50 requests" of a live bearing
+against the committed trajectory archive, and nothing in the system retained them -- the two
+deques above are `ROLLING_WINDOW`-deep and hold *raw* `rms`/`skewness`, not the derived
+channels Section 12 compares. This is the one field here that exists for a consumer outside
+`src/serving/`, so two properties are deliberate: it is bounded (50 floats x 3, per bearing,
+alongside state that is already per-bearing and in-memory), and it changes nothing about what
+`/predict` computes or answers. `docs/monitoring_design.md` Section 5's non-goal about
+historical trend storage is untouched -- that declines *durability across restarts*, and this
+is lost on restart exactly as `rms_history` already is.
+
 ## Concurrency (`docs/serving_design.md` Section 2)
 
 **Neither `BearingState` nor `BearingStateStore` is thread-safe, and both are
@@ -71,6 +83,25 @@ from src.serving.drift import (
 # constants rather than bare strings so the API layer and the tests agree on the spelling.
 WARMING_UP = "warming_up"
 STABLE = "stable"
+
+# `docs/agent_design.md` Section 12's three comparison channels and its 50-request query
+# window. Both are *that* section's decisions, recorded here because this is the process
+# that produces the values; the agent side never imports this module (Section 2's hard
+# constraint -- see `src/agent/mcp/serving_client.py`) and instead declares its own channel
+# order, which `tests/test_serving_state_trajectory.py` pins against this tuple.
+#
+# `rms_ratio` is a channel here, and that is not in tension with
+# `docs/monitoring_design.md` Section 2 excluding it from `MONITORED_FEATURES`. The two
+# exclusions answer different questions: drift asks "is this input unlike training", for
+# which a per-bearing-normalized quantity has no population baseline; Section 12 asks "does
+# this degradation have the same *shape*", for which the leakage-safe per-bearing
+# normalization is precisely what makes bearings comparable. The two code paths share no
+# state, and `observe_drift` still refuses an `rms_ratio` key outright.
+TRAJECTORY_CHANNELS = ("rms_ratio", "kurtosis", "skewness_smoothed")
+# Section 12's "the last 50 requests". Deliberately its own constant rather than a reuse of
+# `BASELINE_N_FILES`, which is also 50: the two are equal by coincidence, not by derivation,
+# and collapsing them would make a later change to either silently move the other.
+TRAJECTORY_HISTORY = 50
 
 
 def window_mean(values: Iterable[float]) -> float:
@@ -117,6 +148,7 @@ class BearingState:
 
     rolling_window: int = ROLLING_WINDOW
     baseline_n_files: int = BASELINE_N_FILES
+    trajectory_history: int = TRAJECTORY_HISTORY
     # docs/monitoring_design.md Section 1: overridable per instance so tests can inject a
     # synthetic baseline; defaults to the committed `models/drift_baseline.json` (Section 3).
     drift_baseline: dict[str, tuple[float, float]] = field(
@@ -133,11 +165,16 @@ class BearingState:
     latest_z_scores: dict[str, float] = field(init=False, default_factory=dict, repr=False)
     predicted_class_counts: dict[str, int] = field(init=False, default_factory=dict, repr=False)
 
+    channel_history: dict[str, deque[float]] = field(init=False, repr=False)
+
     def __post_init__(self) -> None:
         self.rms_history = deque(maxlen=self.rolling_window)
         self.skewness_history = deque(maxlen=self.rolling_window)
         self.drift_history = {
             feature: deque(maxlen=self.rolling_window) for feature in MONITORED_FEATURES
+        }
+        self.channel_history = {
+            channel: deque(maxlen=self.trajectory_history) for channel in TRAJECTORY_CHANNELS
         }
 
     def observe(self, rms: float, skewness: float) -> None:
@@ -245,6 +282,41 @@ class BearingState:
             if any(self.feature_drift(feature)["drifting"] for feature in MONITORED_FEATURES)
             else DRIFT_NOMINAL
         )
+
+    def observe_trajectory(self, channel_values: dict[str, float]) -> None:
+        """Record one file's three `TRAJECTORY_CHANNELS` values (`docs/agent_design.md`
+        Section 12, Issue #140), advancing this bearing's comparison window.
+
+        Call once per file, alongside `observe_drift()` -- after both derived channels are
+        available. Unlike `observe_drift`, `rms_ratio` **is** a required key here; the two
+        methods hold separate deques and neither reads the other's, so the monitoring
+        exclusion and this inclusion cannot leak into one another.
+
+        Every channel is required: a partial update would leave the three deques at
+        different lengths and silently misalign the columns of any matrix built from them,
+        which is a wrong answer rather than a missing one.
+        """
+        missing = set(TRAJECTORY_CHANNELS) - set(channel_values)
+        if missing:
+            raise KeyError(f"observe_trajectory needs every channel; missing {sorted(missing)}")
+        for channel in TRAJECTORY_CHANNELS:
+            self.channel_history[channel].append(float(channel_values[channel]))
+
+    def trajectory(self, window: int | None = None) -> dict[str, list[float]]:
+        """The most recent `window` values of each channel, oldest first.
+
+        `window` defaults to everything retained. A request for more than has been observed
+        returns what exists rather than padding -- the caller is told how many points it got
+        (`n_points`) and decides whether that is enough, which is the only honest option
+        when a bearing has genuinely only been seen 12 times.
+        """
+        if window is None:
+            return {channel: list(values) for channel, values in self.channel_history.items()}
+        if window <= 0:
+            raise ValueError(f"window must be positive, got {window}")
+        return {
+            channel: list(values)[-window:] for channel, values in self.channel_history.items()
+        }
 
     def record_prediction(self, label: str) -> None:
         """Tally one more served label -- `docs/monitoring_design.md` Sections 3/5's

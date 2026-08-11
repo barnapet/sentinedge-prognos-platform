@@ -35,6 +35,7 @@ from src.agent.critic.escalation import escalations_needed
 from src.agent.critic.grounding import GROUNDED, PARTIAL, TIERS, UNGROUNDED
 from src.agent.critic.retrieval_confidence import TAU_TOP
 from src.agent.inventory.build_db import build_db
+from src.agent.mcp.readonly_server import READONLY_TOOL_NAMES
 from src.agent.mcp.results import SOURCE_TYPES
 from src.agent.mcp.tools import INVENTORY_SOURCE_ID
 from src.agent.pipeline import (
@@ -488,9 +489,10 @@ def test_the_pipeline_passes_section_1s_configuration_through_untouched(db_path)
     assert client.runner_kwargs["max_tokens"] == MAX_TOKENS
     assert client.runner_kwargs["thinking"] == THINKING
     assert client.runner_kwargs["output_config"]["effort"] == EFFORT
-    assert [tool.name for tool in client.runner_kwargs["tools"]] == [
-        "get_bearing_status",
-        "predict_health_state",
-        "check_inventory",
-        "search_documentation",
-    ]
+    # The read-only server's tool set, not a second copy of it: Section 5's table gives
+    # Agent A every read-only tool, so a tool added there (as #140 added
+    # `find_similar_historical_pattern`) must reach the answerer without this test needing
+    # an edit to say so -- while a tool appearing here that is *not* on that server, or
+    # `place_order` appearing at all, still fails.
+    assert [tool.name for tool in client.runner_kwargs["tools"]] == list(READONLY_TOOL_NAMES)
+    assert "place_order" not in READONLY_TOOL_NAMES

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -41,6 +42,7 @@ DEFAULT_TIMEOUT_S = 30.0
 
 DRIFT_ENDPOINT = "GET /monitoring/drift"
 PREDICT_ENDPOINT = "POST /predict"
+HISTORY_ENDPOINT = "GET /monitoring/history"
 
 
 class ServingError(Exception):
@@ -86,6 +88,36 @@ def get_drift(
     `file_count`, `baseline_status`, `drift_status`, per-feature z-scores, `rms_ratio_latest`
     and `predicted_class_counts` (`docs/monitoring_design.md` Section 3)."""
     return _request("GET", "/monitoring/drift", base_url, timeout)
+
+
+def get_history(
+    bearing_id: str,
+    window: int,
+    base_url: str = DEFAULT_BASE_URL,
+    timeout: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    """`GET /monitoring/history/{bearing_id}` -- that bearing's recent trajectory in
+    `docs/agent_design.md` Section 12's three comparison channels (Issue #140).
+
+    The live half of `find_similar_historical_pattern`. It arrives over HTTP for the same
+    reason everything else in this module does: the trajectory is state the serving process
+    owns, and a second in-process copy of it would be the exact failure this module exists
+    to prevent.
+
+    An untracked bearing comes back as a 200 with `found: false`, not a 404, so it does not
+    surface here as `ServingRejected` -- see the endpoint's own docstring for why that
+    distinction matters to the answer a technician eventually reads.
+    """
+    # `bearing_id` is the one value here that reaches a URL *path* rather than a query
+    # parameter or a JSON body, and it can originate from a model's tool arguments. Quoted
+    # with `safe=""` so a slash in it cannot re-point the request at a different route.
+    return _request(
+        "GET",
+        f"/monitoring/history/{quote(bearing_id, safe='')}",
+        base_url,
+        timeout,
+        params={"window": window},
+    )
 
 
 def post_predict(

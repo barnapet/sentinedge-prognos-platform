@@ -113,9 +113,25 @@ def compute_online_features(signal: np.ndarray, state: BearingState) -> OnlineFe
         }
     )
 
+    rms_ratio = state.rolling_rms / state.effective_baseline_rms
+
+    # docs/agent_design.md Section 12's three comparison channels (Issue #140). Recorded
+    # here rather than in `state.observe()` because `rms_ratio` is computed at this layer,
+    # not that one -- and recorded after `observe_drift` so the two updates read the same
+    # file's values. Note the deliberate difference from the call above: `rms_ratio` is
+    # excluded there and required here, for the reasons `src.serving.state`'s
+    # `TRAJECTORY_CHANNELS` comment sets out.
+    state.observe_trajectory(
+        {
+            "rms_ratio": rms_ratio,
+            "kurtosis": kurtosis,
+            "skewness_smoothed": skewness_smoothed,
+        }
+    )
+
     return OnlineFeatures(
         rms=rms,
-        rms_ratio=state.rolling_rms / state.effective_baseline_rms,
+        rms_ratio=rms_ratio,
         kurtosis=kurtosis,
         skewness=skewness,
         skewness_smoothed=skewness_smoothed,

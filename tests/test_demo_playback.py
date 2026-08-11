@@ -301,7 +301,19 @@ def test_dockerfile_copies_every_committed_models_artifact():
     `!models/*.joblib` exception, excluding `.gitkeep`) rather than hardcoding it, so a
     *future* committed artifact added the same way is caught by this same test without
     anyone remembering to update it here too.
+
+    **Agent-layer artifacts are exempt, and the exemption is verified rather than asserted**
+    (Issue #140). `models/trajectory_archive.parquet` is loaded by
+    `src/agent/similarity/`, which the serving image neither installs nor imports --
+    `docs/agent_design.md` Section 12 puts the tool on the agent's MCP server precisely so
+    the serving image stays free of `pyarrow` and stays fast to build (#86). Copying it in
+    anyway would satisfy this test while contradicting the reason it exists. So the
+    exemption is paired below with a check that nothing under `src/serving/` actually
+    references the exempt files -- the day one does, the exemption stops holding and this
+    test fails, which is the property #90's lesson was really about.
     """
+    agent_only_artifacts = {"trajectory_archive.parquet", "trajectory_archive_manifest.json"}
+
     gitignore_lines = (REPO_ROOT / ".gitignore").read_text().splitlines()
     committed_artifacts = [
         line[1:].removeprefix("models/")
@@ -310,12 +322,24 @@ def test_dockerfile_copies_every_committed_models_artifact():
     ]
     assert committed_artifacts, "expected at least one committed models/ exception in .gitignore"
 
+    serving_sources = " ".join(
+        path.read_text() for path in (REPO_ROOT / "src" / "serving").rglob("*.py")
+    )
+    for artifact in sorted(agent_only_artifacts):
+        assert artifact not in serving_sources, (
+            f"models/{artifact} is exempt from the Dockerfile COPY check because the "
+            "serving path does not use it -- but src/serving/ now references it, so it "
+            "must either be COPYed into the image or that reference removed"
+        )
+
     dockerfile = (REPO_ROOT / "Dockerfile").read_text()
     copy_lines = [line for line in dockerfile.splitlines() if line.startswith("COPY models/")]
     assert copy_lines, "Dockerfile must have a COPY instruction for models/"
     copy_instructions = " ".join(copy_lines)
 
     for artifact in committed_artifacts:
+        if artifact in agent_only_artifacts:
+            continue
         assert f"models/{artifact}" in copy_instructions, (
             f"models/{artifact} is committed (per .gitignore) but not COPYed into the "
             "serving image -- the container will FileNotFoundError at startup if any "
