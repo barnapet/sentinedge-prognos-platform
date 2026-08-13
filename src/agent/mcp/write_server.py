@@ -51,7 +51,7 @@ from src.agent.executor.token_bridge import TokenConsumer, token_store_for_bridg
 from src.agent.inventory.build_db import DB_PATH, build_db
 from src.agent.mcp import tools
 from src.agent.mcp.budget import ToolCallBudget
-from src.agent.mcp.tools import INVENTORY_SOURCE_ID
+from src.agent.mcp.tools import ORDER_SOURCE_ID
 
 SERVER_NAME = "prognos-write"
 
@@ -102,7 +102,7 @@ def build_server(
         derived from the validated token, not supplied here. requested_by is unaffected and
         stays a plain argument. Returns the new order id, or an explanation of why the
         order was rejected."""
-        refusal = budget.guard("inventory", INVENTORY_SOURCE_ID)
+        refusal = budget.guard("inventory", ORDER_SOURCE_ID)
         return refusal or tools.place_order(
             part_number,
             quantity,
