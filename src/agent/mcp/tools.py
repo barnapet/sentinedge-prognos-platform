@@ -67,6 +67,15 @@ from src.agent.similarity.archive import (
 )
 
 INVENTORY_SOURCE_ID = "data/agent/inventory.db"
+# `place_order`'s own id, distinct from `check_inventory`'s (Issue #156). Both tools read
+# and write the same database file, but they are different operations with different risk
+# profiles -- a read and a stock-mutating write -- and minting the identical `source_id` for
+# both was a latent ambiguity: harmless today because `place_order` lives in the Executor's
+# separate write-only MCP process, unreachable from an `AnsweredTurn`, but a real one the
+# moment anything builds unified tracing across Answerer and Executor activity. `::` sub-
+# addressing mirrors the existing `chunk_id` convention (`f"{source_id}::{chunk_index}"`,
+# `src/agent/rag/schema.py`).
+ORDER_SOURCE_ID = "data/agent/inventory.db::orders"
 # `search_documentation` queries a live Qdrant service at request time, so `live_endpoint`
 # is the vocabulary value that describes *the retrieval*; the citable per-chunk ids each
 # carry their own `decision_doc`/`public_reference` block inside `data.results` (Section 6:
@@ -457,17 +466,17 @@ def place_order(
     argument.
     """
     if quantity <= 0:
-        return failed("inventory", INVENTORY_SOURCE_ID, "quantity must be a positive whole number")
+        return failed("inventory", ORDER_SOURCE_ID, "quantity must be a positive whole number")
 
     db_path = Path(db_path)
     if not db_path.exists():
-        return failed("inventory", INVENTORY_SOURCE_ID, INVENTORY_UNAVAILABLE)
+        return failed("inventory", ORDER_SOURCE_ID, INVENTORY_UNAVAILABLE)
 
     consumed = token_store.consume(approval_token, part_number, quantity, bearing_id)
     if isinstance(consumed, TokenError):
         return failed(
             "inventory",
-            INVENTORY_SOURCE_ID,
+            ORDER_SOURCE_ID,
             f"{ORDER_FAILED}: {_APPROVAL_TOKEN_ERROR_MESSAGES[consumed.reason]}",
         )
     # `ApprovedOrder.approved_at` is a `datetime` (Issue #124); `orders.place_order`'s
@@ -490,20 +499,20 @@ def place_order(
         )
     except UnknownPartError:
         return failed(
-            "inventory", INVENTORY_SOURCE_ID, f"no part with part number {part_number!r} exists"
+            "inventory", ORDER_SOURCE_ID, f"no part with part number {part_number!r} exists"
         )
     except OrderRejectedError as exc:
         # The database's own reason is preserved: an oversell and a missing approval field
         # are both rejections here, and which one it was is exactly what the caller needs.
-        return failed("inventory", INVENTORY_SOURCE_ID, f"{ORDER_FAILED}: {exc}")
+        return failed("inventory", ORDER_SOURCE_ID, f"{ORDER_FAILED}: {exc}")
     except (InventoryError, sqlite3.Error, ValueError) as exc:
-        return failed("inventory", INVENTORY_SOURCE_ID, f"{ORDER_FAILED}: {exc}")
+        return failed("inventory", ORDER_SOURCE_ID, f"{ORDER_FAILED}: {exc}")
     finally:
         conn.close()
 
     return ok(
         "inventory",
-        INVENTORY_SOURCE_ID,
+        ORDER_SOURCE_ID,
         {
             "order_id": order_id,
             "part_number": part_number,
