@@ -88,6 +88,31 @@ MIN_QUERY_WINDOW = 10
 # needs a `source_id` to say *which* source failed (`results.py`'s "one shape" rule).
 ARCHIVE_SOURCE_ID_FALLBACK = "trajectory_archive@unavailable"
 
+
+def _call_retrying_once_on_unreachable(call: Callable[[], Any]) -> Any:
+    """Call `call()`; if it raises `ServingUnreachable`, call it exactly once more.
+
+    `docs/agent_design.md` Section 8's tier-3 table: "Tool times out -> Exactly one retry,
+    then degrade; not an infinite loop." This is that retry, shared by all three
+    live-serving call sites (Issue #154) so "all three sites get the same policy" is a
+    property of using this function rather than three hand-copied try/excepts that could
+    drift apart.
+
+    Only `ServingUnreachable` is retried -- "nothing answered" is the transient case Section
+    8 means by "tool times out". `ServingRejected` (the service is up and said no) and every
+    other exception propagate from the first attempt unchanged: retrying an actual rejection
+    doesn't help, and this function does not decide what a site does with either failure --
+    that stays each site's own `except` clause, exactly as before this change.
+
+    No backoff, no jitter, no budget beyond the one extra attempt: the second call's own
+    `ServingUnreachable` (or anything else) propagates straight out, uncaught here.
+    """
+    try:
+        return call()
+    except ServingUnreachable:
+        return call()
+
+
 # Plain-language rejections for each of approval.py's four closed `TokenError` reasons
 # (Issue #124). Keyed off the module's own constants rather than the literal strings, so a
 # typo here would be a `KeyError` at test time, not a silently-wrong message.
@@ -119,7 +144,7 @@ def get_bearing_status(
     invent one from.
     """
     try:
-        body = get_drift(base_url=base_url)
+        body = _call_retrying_once_on_unreachable(lambda: get_drift(base_url=base_url))
     except ServingUnreachable:
         return failed("live_endpoint", DRIFT_ENDPOINT, SERVICE_UNREACHABLE)
     except ServingRejected as exc:
@@ -167,7 +192,9 @@ def predict_health_state(
             "live_endpoint", PREDICT_ENDPOINT, "a signal window is required, and none was given"
         )
     try:
-        body = post_predict(bearing_id, list(signal), base_url=base_url)
+        body = _call_retrying_once_on_unreachable(
+            lambda: post_predict(bearing_id, list(signal), base_url=base_url)
+        )
     except ServingUnreachable:
         return failed("live_endpoint", PREDICT_ENDPOINT, SERVICE_UNREACHABLE)
     except ServingRejected as exc:
@@ -325,7 +352,9 @@ def find_similar_historical_pattern(
         )
 
     try:
-        body = get_history(bearing_id, window, base_url=base_url)
+        body = _call_retrying_once_on_unreachable(
+            lambda: get_history(bearing_id, window, base_url=base_url)
+        )
     except ServingUnreachable:
         return failed("trajectory_match", source_id, SERVICE_UNREACHABLE)
     except ServingRejected as exc:
