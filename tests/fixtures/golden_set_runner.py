@@ -15,9 +15,14 @@ serving process, and `tests/fixtures/cassette.py`'s record/replay seam. It lives
 `tests/` for the same reason `cassette.py` does -- Issue #122's "test infrastructure only"
 constraint means no module under `src/agent/` may know either of them exists.
 
-**Retrieval quality is not here.** recall@k, precision@k, `relevant_chunk_ids` and Section
-8's 2x2 evidence/answer table are Issue #150's sibling (part 3b), deliberately built on top
-of this rather than inside it.
+**Retrieval quality is not computed here.** recall@k, precision@k, `relevant_chunk_ids` and
+Section 8's 2x2 evidence/answer table are Issue #150's sibling (part 3b) and live in
+`tests/fixtures/golden_set_retrieval.py`, deliberately built on top of this rather than
+inside it. What this module does is *report* them, in their own section beneath the two
+gates: `GoldenSetReport.retrieval` is an additive field, no scoring or gate logic below
+reads it, and Section 8's "reported as two numbers, never averaged into one" is therefore a
+property of the import graph -- the retrieval module cannot reach the gates, and the gates
+never see a retrieval number.
 
 ## The pipeline, and why the two-step form
 
@@ -77,6 +82,15 @@ from src.agent.mcp.tools import DOCS_SOURCE_ID, INVENTORY_SOURCE_ID
 from src.agent.pipeline import verify_turn_async
 from tests.fixtures.cassette import LIVE, RECORD, REPLAY, cassette, resolve_mode
 from tests.fixtures.golden_set import CATEGORY_COUNTS, GoldenSetItem, load_golden_set
+from tests.fixtures.golden_set_retrieval import (
+    RetrievalReport,
+    SearchOutcome,
+    format_retrieval_section,
+    retrieval_as_dict,
+    score_retrieval,
+    search_outcome,
+    summarize_retrieval,
+)
 
 MUST_REFUSE = 'Must refuse / "I don\'t know"'
 
@@ -249,6 +263,15 @@ class ItemRun:
     `error` is set when the run could not be made at all -- a missing cassette, an
     unreachable API. It is kept separate from a failing score because the two mean opposite
     things to a reader: a failed item is a result, an errored item is an absence of one.
+
+    `search` is Issue #152's addition: the ranked `(chunk_id, score)` list this turn's
+    `search_documentation` calls returned, read off the same payloads `tool_names` is read
+    off and changing nothing about that reading. `None` -- the default -- means *no
+    observation*, not *nothing retrieved*: an `ItemRun` built by hand, or an errored run that
+    never reached a tool. `SearchOutcome(searched=False)` is the observed-and-never-searched
+    case, and the two are kept apart because a retrieval metric computed from an absent
+    observation would be a number about the harness wearing a model's clothes. No sub-score
+    below reads this field.
     """
 
     item_id: str
@@ -259,6 +282,7 @@ class ItemRun:
     has_recommendation: bool = False
     n_claims: int = 0
     error: str | None = None
+    search: SearchOutcome | None = None
 
     @classmethod
     def from_turn(
@@ -272,6 +296,7 @@ class ItemRun:
             grounding_tier=response.grounding_tier,
             has_recommendation=response.recommendation is not None,
             n_claims=len(response.claims),
+            search=search_outcome(turn.tool_payloads),
         )
 
 
@@ -543,6 +568,12 @@ class GoldenSetReport:
     attempts: int
     categories: tuple[CategoryResult, ...]
     scores: tuple[ItemScore, ...] = ()
+    # Issue #152's additive field. Section 8's *second* number, carried next to the two gates
+    # and read by no property below: `must_refuse_gate_passed`, `remaining_gate_passed` and
+    # `gates_passed` are byte-for-byte the ones part 3a shipped, and `main`'s exit code still
+    # follows `gates_passed` alone. `None` when nobody supplied the items to score retrieval
+    # against (see `summarize`).
+    retrieval: RetrievalReport | None = None
 
     @property
     def must_refuse(self) -> CategoryResult:
@@ -593,8 +624,48 @@ class GoldenSetReport:
         return {c.category: c.total for c in self.categories} == CATEGORY_COUNTS
 
 
-def summarize(scores: Sequence[ItemScore], *, mode: str | None = None) -> GoldenSetReport:
-    """Per-category counts in Section 8's own table order, plus the two gates."""
+def retrieval_report(
+    scores: Sequence[ItemScore], items: Sequence[GoldenSetItem] | None = None
+) -> RetrievalReport:
+    """Issue #152's retrieval reading for a set of scored items.
+
+    The join is by `item_id`, because an `ItemScore` carries the id and not the item, and
+    `relevant_chunk_ids` lives on the item. `items` defaults to the real golden set; a score
+    whose `item_id` is not in it contributes **no** reading rather than an invented one --
+    the same rule as a tool-grounded item, applied to a score the golden set does not
+    recognise.
+
+    Nothing here can change a verdict: it reads `ItemScore.passed` as one axis of the 2x2 and
+    writes nothing back.
+    """
+    known = items if items is not None else load_golden_set()
+    by_id = {item.item_id: item for item in known}
+    qualities = [
+        score_retrieval(
+            by_id[score.item_id],
+            score.run.search,
+            must_refuse_category=MUST_REFUSE,
+            answer_correct=None if score.run.error is not None else score.passed,
+        )
+        for score in scores
+        if score.item_id in by_id
+    ]
+    return summarize_retrieval(qualities)
+
+
+def summarize(
+    scores: Sequence[ItemScore],
+    *,
+    mode: str | None = None,
+    items: Sequence[GoldenSetItem] | None = None,
+) -> GoldenSetReport:
+    """Per-category counts in Section 8's own table order, the two gates, and -- separately --
+    Issue #152's retrieval reading.
+
+    `items` is only ever used for the retrieval half (it is where `relevant_chunk_ids` live);
+    the categories and both gates are computed from `scores` exactly as part 3a computed
+    them, whether it is supplied or not.
+    """
     resolved = resolve_mode(mode)
     by_category: dict[str, list[ItemScore]] = {category: [] for category in CATEGORY_COUNTS}
     for score in scores:
@@ -605,12 +676,13 @@ def summarize(scores: Sequence[ItemScore], *, mode: str | None = None) -> Golden
         categories=tuple(
             CategoryResult(
                 category=category,
-                passed=sum(1 for score in items if score.passed),
-                total=len(items),
+                passed=sum(1 for score in scored_items if score.passed),
+                total=len(scored_items),
             )
-            for category, items in by_category.items()
+            for category, scored_items in by_category.items()
         ),
         scores=tuple(scores),
+        retrieval=retrieval_report(scores, items),
     )
 
 
@@ -655,6 +727,9 @@ def format_report(report: GoldenSetReport) -> str:
         f"({report.remaining_rate:.0%})  {'PASS' if report.remaining_gate_passed else 'FAIL'}",
     ]
 
+    if report.retrieval is not None:
+        lines += format_retrieval_section(report.retrieval)
+
     failures = [score for score in report.scores if not score.passed]
     if failures:
         lines += ["", "failures:"]
@@ -688,7 +763,7 @@ def run_golden_set(
     scores = [
         run_and_score(item, serving_url=serving_url, db_path=db_path, mode=mode) for item in items
     ]
-    return summarize(scores, mode=mode)
+    return summarize(scores, mode=mode, items=items)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -715,8 +790,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def report_as_dict(report: GoldenSetReport) -> dict[str, Any]:
-    """The report as data, for a PR comment or a later trace. Same two-gate shape."""
-    return {
+    """The report as data, for a PR comment or a later trace. Same two-gate shape.
+
+    Issue #152 adds one key, `retrieval_quality`, and adds it **beside** the two gates rather
+    than inside either: no existing key's value changes, and no number below is derived from
+    a retrieval metric. The key is absent (rather than `null`) when no retrieval reading was
+    produced, so a consumer cannot mistake "not measured" for "measured as zero".
+    """
+    payload: dict[str, Any] = {
         "mode": report.mode,
         "attempts_per_item": report.attempts,
         "categories": [
@@ -741,6 +822,9 @@ def report_as_dict(report: GoldenSetReport) -> dict[str, Any]:
             if not s.passed
         ],
     }
+    if report.retrieval is not None:
+        payload["retrieval_quality"] = retrieval_as_dict(report.retrieval)
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
