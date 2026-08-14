@@ -412,11 +412,24 @@ def test_every_committed_cassette_is_still_fresh_and_says_when_it_was_recorded(p
 
 def test_there_is_a_committed_cassette_for_every_live_test():
     """Guards the way this could rot quietly: a live test added without a recording would
-    otherwise fail only for the person who next ran the whole suite."""
+    otherwise fail only for the person who next ran the whole suite.
+
+    Golden-set cassettes (Issue #150, `golden_set_runner.CASSETTE_PREFIX`) are excluded --
+    they share this directory (`cassette_name()` builds its path the same way any other
+    cassette does) but are recorded one per golden-set item, not one per `@pytest.mark`-style
+    live test, so this invariant was never about them. The prefix is imported rather than
+    restated so a rename on either side cannot silently desync the two."""
+    from tests.fixtures.golden_set_runner import CASSETTE_PREFIX as GOLDEN_SET_PREFIX
+
     expected = {
         "answerer_live__schema_valid_draft",
         "answerer_live__request_envelope",
         "pipeline_live__verified_tiered_answer",
         "pipeline_live__answer_and_verify",
     }
-    assert {path.stem for path in CASSETTE_DIR.glob("*.json")} == expected
+    live_test_stems = {
+        path.stem
+        for path in CASSETTE_DIR.glob("*.json")
+        if not path.stem.startswith(GOLDEN_SET_PREFIX)
+    }
+    assert live_test_stems == expected
