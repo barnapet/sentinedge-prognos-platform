@@ -74,12 +74,15 @@ VERDICTS = ("yes", "no", "unclear")
 
 # --- The lexical-overlap floor ---------------------------------------------------------
 #
-# **A starting value, uncalibrated, exactly like `TAU_TOP`/`TAU_SUPPORT`** -- Issue #114
-# excludes calibrating it against real data, and Section 8's golden set is where it gets
-# measured. What it is chosen to be is a *rate*, not a similarity: `lexical_overlap` is
-# containment -- the fraction of the claim's own content words that appear in the chunk --
-# so it does not shrink just because a 1,200-character chunk is long, and a claim genuinely
-# paraphrasing its chunk scores high.
+# **A starting value, still uncalibrated.** `TAU_TOP`/`TAU_SUPPORT` were the other two, and
+# they no longer are -- Issues #163/#164 swept them against Section 8's golden set and #165
+# applied the measured pair. This floor was not part of that sweep and is a separate exercise:
+# Issue #114 excludes calibrating it against real data, and Section 8's golden set is where it
+# gets measured, on its own evidence. What it is chosen to be is a *rate*, not a similarity --
+# so the sweep that fixed the two similarity thresholds says nothing about this one.
+# `lexical_overlap` is containment -- the fraction of the claim's own content words that
+# appear in the chunk -- so it does not shrink just because a 1,200-character chunk is long,
+# and a claim genuinely paraphrasing its chunk scores high.
 #
 # 0.6 says: escalate when more than two content words in five are absent from the chunk the
 # claim cites. Below that, "cites a real chunk containing the right numbers" stops being much

@@ -32,6 +32,7 @@ import pytest
 
 from src.agent.answerer import Claim, Draft
 from src.agent.critic import escalation as escalation_module
+from src.agent.critic import retrieval_confidence as retrieval_confidence_module
 from src.agent.critic.deterministic import (
     CITATION_COVERAGE,
     CITATION_EXISTENCE,
@@ -105,8 +106,15 @@ OTHER_CHUNK_TEXT = (
 )
 
 
-def evidence(*, scores: tuple[float, float] = (0.62, 0.41)) -> TurnEvidence:
+def evidence(
+    *, scores: tuple[float, float] = (TAU_TOP + 0.05, TAU_SUPPORT + 0.02)
+) -> TurnEvidence:
     """Two retrieved chunks, both citable, with retrieval that clears the thresholds.
+
+    The default scores are expressed relative to `TAU_TOP`/`TAU_SUPPORT` rather than as
+    literals: "clears the thresholds" is the property every caller of this fixture depends
+    on, and #163's calibration moved the thresholds far enough (0.45/0.35 → 0.75/0.70) that
+    the previous literals silently stopped clearing them.
 
     Both carry `source_type="decision_doc"`, which is what the tool layer mints for a chunk
     retrieved from a `docs/` file (Section 2's vocabulary) and therefore what
@@ -393,26 +401,51 @@ def _raises(*args, **kwargs):
 # --- Section 6, step 4: retrieval confidence ---------------------------------------------
 
 
-def test_the_thresholds_are_section_6s_starting_values():
-    assert TAU_TOP == 0.45
-    assert TAU_SUPPORT == 0.35
+def test_the_thresholds_are_the_calibrated_values_from_the_sweep():
+    """Issue #163's sweep (published in PR #164) recommended this pair; #165 applied it.
+    "Starting values" no longer describes them — the numbers below are measured."""
+    assert TAU_TOP == 0.75
+    assert TAU_SUPPORT == 0.70
     assert MIN_SUPPORTING_CHUNKS == 2
 
 
-def test_the_design_document_still_calls_the_thresholds_starting_values():
-    """The constants above are only defensible while the document still says they are
-    uncalibrated. If Section 8's issue calibrates them and rewords this, that issue is
-    expected to move this test too — deliberately, not by accident."""
-    text = DESIGN_DOC.read_text(encoding="utf-8")
+def test_the_module_docstring_states_the_thresholds_are_calibrated_and_the_ceiling_is_7_of_8():
+    """The successor to the tripwire that pinned "the starting values are 0.45 and 0.35".
+    That test existed because the constants were only defensible while the document still
+    called them uncalibrated, and its own docstring said the calibrating issue was expected
+    to move it deliberately. #165 is that issue, so this is where it moved to: the constants
+    are now only defensible while the module says what they were measured against, and says
+    that 7/8 — not 8/8 — is the answerable ceiling at this pair, so nobody reads the missing
+    item as calibration left undone when it is a retrieval-quality finding.
+    """
+    docstring = retrieval_confidence_module.__doc__ or ""
 
-    assert "**The starting values are 0.45 and 0.35, and they are explicitly\nstarting values**" in text
+    assert "calibrated values, measured, not guessed" in docstring
+    assert "#163" in docstring and "#164" in docstring
+    assert "answerable ceiling is 7/8, not 8/8" in docstring
+    assert "overlap by top score" in docstring, "the ceiling is stated with its reason"
+    assert "0.7015" in docstring, "the answerable item that is lost"
+    for must_refuse_score in ("0.7131", "0.7194", "0.7323"):
+        assert must_refuse_score in docstring, "the must-refuse items it scores below"
+    assert "starting values, not decisions" not in docstring
 
 
 def test_retrieval_passes_only_with_a_strong_top_and_a_second_supporting_chunk():
-    assert assess_retrieval([0.62, 0.41]).passed is True
-    assert assess_retrieval([0.62, 0.20]).passed is False, "one supporting chunk is not two"
-    assert assess_retrieval([0.44, 0.40, 0.38]).passed is False, "top is below TAU_TOP"
-    assert assess_retrieval([0.45, 0.35]).passed is True, "the thresholds are inclusive"
+    """Expressed relative to the thresholds rather than in literals, matching
+    `tests/test_agent_golden_set_retrieval.py`: what is asserted is the *shape* of the
+    predicate, which #163's calibration does not change, and a re-calibration should not
+    have to re-derive these numbers by hand a second time."""
+    assert assess_retrieval([TAU_TOP + 0.02, TAU_SUPPORT + 0.01]).passed is True
+    assert (
+        assess_retrieval([TAU_TOP + 0.02, TAU_SUPPORT - 0.15]).passed is False
+    ), "one supporting chunk is not two"
+    assert (
+        assess_retrieval([TAU_TOP - 0.01, TAU_SUPPORT + 0.03, TAU_SUPPORT + 0.01]).passed
+        is False
+    ), "top is below TAU_TOP"
+    assert (
+        assess_retrieval([TAU_TOP, TAU_SUPPORT]).passed is True
+    ), "the thresholds are inclusive"
 
 
 def test_a_turn_that_retrieved_nothing_is_not_thereby_below_threshold():

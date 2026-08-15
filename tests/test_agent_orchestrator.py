@@ -34,6 +34,7 @@ import pytest
 from src.agent.answerer import Claim, Draft
 from src.agent.critic.deterministic import EvidenceItem, TurnEvidence
 from src.agent.critic.grounding import GROUNDED, PARTIAL, UNGROUNDED, assemble
+from src.agent.critic.retrieval_confidence import TAU_SUPPORT, TAU_TOP
 from src.agent.executor.approval import ApprovalTokenStore
 from src.agent.executor.client import OrderPlaced
 from src.agent.inventory.build_db import build_db
@@ -76,9 +77,17 @@ RECOMMENDED_PART = "ZA-2115"
 RECOMMENDATION = f"Order 5 of part {RECOMMENDED_PART} for bearing 2nd_test-demo."
 
 
-def _evidence(*, scores: tuple[float, float] = (0.62, 0.41)) -> TurnEvidence:
+def _evidence(
+    *, scores: tuple[float, float] = (TAU_TOP + 0.05, TAU_SUPPORT + 0.02)
+) -> TurnEvidence:
     """Two citable chunks whose scores clear `TAU_TOP`/`TAU_SUPPORT`, so retrieval passes and
-    the tier is decided by the claims rather than by the confidence check."""
+    the tier is decided by the claims rather than by the confidence check.
+
+    Relative to the thresholds, not literals: #163's calibration raised them (0.45/0.35 →
+    0.75/0.70), and the previous literals stopped clearing them without any assertion here
+    noticing — the tier assertions below accept `GROUNDED` *or* `PARTIAL`, so the fixture
+    would have gone on passing while no longer being the case it documents.
+    """
     return TurnEvidence(
         (
             EvidenceItem(

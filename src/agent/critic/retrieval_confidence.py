@@ -3,15 +3,23 @@
 Retrieval passes when the top chunk's cosine similarity is at or above `TAU_TOP` **and** at
 least `MIN_SUPPORTING_CHUNKS` chunks are at or above the lower `TAU_SUPPORT`.
 
-**The two thresholds below are starting values, not decisions, and this issue does not
-calibrate them.** Section 6 is explicit that what is decided now is the *procedure* --
-calibrate against Section 8's golden set, choose the pair that keeps every must-refuse item
-refusing while maximizing pass rate on the answerable ones, and publish the measured values
-and the sweep -- and that the numbers are measured later, by the issue that builds that
-golden set. Hand-picking a threshold and never checking it is the failure
-`docs/evaluation_protocol.md` §4 pre-empts in a different context; guessing one *here*, from
-no data, would be the same mistake wearing a calibration's clothes. So they are named
-constants in one place, with this note attached, and nothing in this issue tunes them.
+**The two thresholds below are calibrated values, measured, not guessed** (Issues #163/#164,
+applied by #165). Section 6 fixed the *procedure* -- sweep against Section 8's golden set,
+choose the pair that keeps every must-refuse item refusing while maximizing pass rate on the
+answerable ones, and publish the measured values and the sweep -- and
+`tests/fixtures/calibrate_retrieval.py` is that procedure, run against real retrieval scores
+from the 522-chunk `prognos_docs` index. It swept 320 candidate pairs through *this* module's
+own `assess_retrieval`, and `TAU_TOP = 0.75` / `TAU_SUPPORT = 0.70` is what it recommended.
+Re-run that script -- it needs no API key -- whenever the corpus moves.
+
+**At this pair the golden set's answerable ceiling is 7/8, not 8/8, and no threshold reaches
+8/8.** The two classes overlap by top score: `corpus-answerable-health-state-thresholds`
+tops out at 0.7015, *below* three must-refuse items (0.7131, 0.7194, 0.7323). Any `tau_top`
+low enough to admit that answerable item therefore also admits those three refusals, and
+keeping every must-refuse item refusing is Section 8's zero-tolerance constraint, not a term
+to trade against pass rate. So the missing item is a retrieval/chunking finding -- the
+corpus, the chunking, or `k` -- and moving these constants cannot fix it. A reader who sees
+7/8 on the golden set should not read it as calibration left undone.
 """
 from __future__ import annotations
 
@@ -20,11 +28,13 @@ from typing import Sequence
 
 from src.agent.critic.deterministic import TurnEvidence
 
-# --- Section 6's starting values, uncalibrated. Section 8's golden-set issue changes these,
-# --- and publishes the sweep that justified the change. Nothing else in this package
-# --- hard-codes a similarity threshold.
-TAU_TOP = 0.45
-TAU_SUPPORT = 0.35
+# --- Calibrated against Section 8's golden set by Issue #163 (sweep published in PR #164),
+# --- applied here by #165. `tau_top` sits 0.0177 above the highest must-refuse top score and
+# --- 0.0099 below the lowest answerable one it still admits; `tau_support` is the strongest
+# --- corroboration floor that costs no further item. Nothing else in this package hard-codes
+# --- a similarity threshold.
+TAU_TOP = 0.75
+TAU_SUPPORT = 0.70
 
 # Section 6: "at least two chunks are at or above a lower TAU_SUPPORT". The top chunk counts
 # toward it, since TAU_TOP is above TAU_SUPPORT by construction.
