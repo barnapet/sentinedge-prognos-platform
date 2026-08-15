@@ -11,9 +11,10 @@ Or as a command, against an already-running fixture (see "The fixture" below):
 
 This module composes machinery that already exists and invents none of it: the real
 Answerer->Critic pipeline (`src/agent/pipeline.py`), the real read-only MCP tools, the real
-serving process, and `tests/fixtures/cassette.py`'s record/replay seam. It lives under
-`tests/` for the same reason `cassette.py` does -- Issue #122's "test infrastructure only"
-constraint means no module under `src/agent/` may know either of them exists.
+serving process, and a real `AsyncAnthropic` client -- no recorded cassette, ever (see
+"Attempts" below for why). It lives under `tests/` for the same reason `cassette.py` does --
+Issue #122's "test infrastructure only" constraint means no module under `src/agent/` may
+know either of them exists.
 
 **Retrieval quality is not computed here.** recall@k, precision@k, `relevant_chunk_ids` and
 Section 8's 2x2 evidence/answer table are Issue #150's sibling (part 3b) and live in
@@ -34,22 +35,15 @@ which tools were called, and the tool payloads that answer it live on the turn; 
 `GroundedResponse` alone cannot say. Nothing else differs -- same functions, same order, same
 module.
 
-## Cassette vs live: the 3x non-determinism rule, resolved
+## Attempts: Section 8's 3x non-determinism rule
 
 Section 8 says "each item runs 3 times; an item passes only if all 3 pass", and it says that
-about a *model*. A cassette replays one fixed HTTP conversation, so replaying it three times
-re-derives the same draft three times: it would produce a green "3/3 stable" that measures
-nothing. Issue #150 resolves the tension rather than leaving it implicit, and the resolution
-is `ATTEMPTS_BY_MODE`:
-
-| mode | attempts | what it measures |
-|---|---|---|
-| `replay` (default) | **1** | that the harness, tools and gate still work. Free, offline, no key. Not a capability measurement, and the report says so on its face. |
-| `live` | **3** | Section 8's real rule. 30 items x 3 = 90 billed calls, so it is run **on demand**, not on every PR. |
-| `record` | 1 | one recording per item is what a cassette is. |
-
-Recording three and replaying the first would be worse than either: it would put a number in
-the report that no committed artifact can reproduce.
+about a *model* -- so this runner always makes real, billed calls against the live API, three
+attempts per item, all of which must pass. 30 items x 3 = 90 billed calls, so it is run **on
+demand**, by hand (`docs/agent_design.md` Section 8: "runs manually and on a labelled PR...
+needs a key that CI does not hold"), not on every PR. `ATTEMPTS_BY_MODE` names that count
+rather than leaving `3` as a bare literal, so a reader of `run_and_score` can see where it
+comes from.
 
 ## The fixture
 
@@ -74,13 +68,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from anthropic import AsyncAnthropic
+
 from src.agent.answerer import AnsweredTurn, answer_turn_async
 from src.agent.critic.grounding import UNGROUNDED, GroundedResponse
 from src.agent.mcp.readonly_server import READONLY_TOOL_NAMES
 from src.agent.mcp.serving_client import DRIFT_ENDPOINT, PREDICT_ENDPOINT
 from src.agent.mcp.tools import DOCS_SOURCE_ID, INVENTORY_SOURCE_ID
 from src.agent.pipeline import verify_turn_async
-from tests.fixtures.cassette import LIVE, RECORD, REPLAY, cassette, resolve_mode
+from tests.fixtures.cassette import LIVE
 from tests.fixtures.golden_set import CATEGORY_COUNTS, GoldenSetItem, load_golden_set
 from tests.fixtures.golden_set_retrieval import (
     RetrievalReport,
@@ -99,23 +95,9 @@ MUST_REFUSE = 'Must refuse / "I don\'t know"'
 MUST_REFUSE_FLOOR = 1.0
 AGGREGATE_FLOOR = 0.9
 
-# See "Cassette vs live" above. This mapping *is* Issue #150's resolution of the tension --
-# it is not a tuning knob, and changing a value here changes what the report means.
-ATTEMPTS_BY_MODE = {REPLAY: 1, RECORD: 1, LIVE: 3}
-
-CASSETTE_PREFIX = "golden_set__"
-
-
-def cassette_name(item: GoldenSetItem) -> str:
-    """One cassette per item, named after it.
-
-    There is no per-attempt variant, because there is no mode in which one would be read:
-    `replay` and `record` run a single attempt, and `live` makes real calls and touches no
-    cassette file at all (`cassette.py`'s `LIVE` branch yields a plain client and writes
-    nothing). Three recorded attempts of which only the first is ever replayed would put a
-    number in the report that no committed artifact reproduces.
-    """
-    return f"{CASSETTE_PREFIX}{item.item_id}"
+# See "Attempts" above. Not a tuning knob -- changing the value here changes what the report
+# means.
+ATTEMPTS_BY_MODE = {LIVE: 3}
 
 
 # --------------------------------------------------------------------------------------
@@ -260,9 +242,10 @@ def cited_source_ids(response: GroundedResponse) -> tuple[str, ...]:
 class ItemRun:
     """What one pass of one item through the pipeline produced.
 
-    `error` is set when the run could not be made at all -- a missing cassette, an
-    unreachable API. It is kept separate from a failing score because the two mean opposite
-    things to a reader: a failed item is a result, an errored item is an absence of one.
+    `error` is set when the run could not be made at all -- missing Anthropic credentials, an
+    unreachable serving API. It is kept separate from a failing score because the two mean
+    opposite things to a reader: a failed item is a result, an errored item is an absence of
+    one.
 
     `search` is Issue #152's addition: the ranked `(chunk_id, score)` list this turn's
     `search_documentation` calls returned, read off the same payloads `tool_names` is read
@@ -320,21 +303,19 @@ def run_item(
     *,
     serving_url: str | None = None,
     db_path: Path | None = None,
-    mode: str | None = None,
 ) -> ItemRun:
-    """One item, once, sourcing its model calls from this mode's client.
+    """One item, once, through the real pipeline against the real Anthropic API.
 
     One `asyncio.run` per call, and the client is opened inside it: an httpx connection pool
     belongs to the loop it was opened on, which is the same constraint
     `test_agent_pipeline_live.py` records for its two-step form.
     """
-    resolved = resolve_mode(mode)
 
     async def _run() -> ItemRun:
-        with cassette(cassette_name(item), mode=resolved) as client:
-            return await run_item_async(
-                item, client=client, serving_url=serving_url, db_path=db_path
-            )
+        client = AsyncAnthropic()
+        return await run_item_async(
+            item, client=client, serving_url=serving_url, db_path=db_path
+        )
 
     try:
         return asyncio.run(_run())
@@ -513,25 +494,19 @@ def run_and_score(
     *,
     serving_url: str | None = None,
     db_path: Path | None = None,
-    mode: str | None = None,
 ) -> ItemScore:
-    """Run one item for this mode's number of attempts; it passes only if all of them do.
+    """Run one item for Section 8's three attempts; it passes only if all three do.
 
-    Section 8's "non-determinism is a failure, not noise", applied where it can mean
-    something. In `replay` that is one attempt (see the module docstring's table): the score
-    is then a statement about the harness, not about model stability, and `format_report`
-    prints the mode so no reader can mistake one for the other. The **first failing**
-    attempt is the one reported, because it is the evidence for the verdict.
+    Section 8's "non-determinism is a failure, not noise". The **first failing** attempt is
+    the one reported, because it is the evidence for the verdict.
     """
-    attempts = ATTEMPTS_BY_MODE[resolve_mode(mode)]
+    attempts = ATTEMPTS_BY_MODE[LIVE]
     scored: ItemScore | None = None
     for _attempt in range(attempts):
-        scored = score_item(
-            item, run_item(item, serving_url=serving_url, db_path=db_path, mode=mode)
-        )
+        scored = score_item(item, run_item(item, serving_url=serving_url, db_path=db_path))
         if not scored.passed:
             return scored
-    assert scored is not None  # attempts >= 1 for every mode
+    assert scored is not None  # attempts >= 1
     return scored
 
 
@@ -656,7 +631,6 @@ def retrieval_report(
 def summarize(
     scores: Sequence[ItemScore],
     *,
-    mode: str | None = None,
     items: Sequence[GoldenSetItem] | None = None,
 ) -> GoldenSetReport:
     """Per-category counts in Section 8's own table order, the two gates, and -- separately --
@@ -666,13 +640,12 @@ def summarize(
     the categories and both gates are computed from `scores` exactly as part 3a computed
     them, whether it is supplied or not.
     """
-    resolved = resolve_mode(mode)
     by_category: dict[str, list[ItemScore]] = {category: [] for category in CATEGORY_COUNTS}
     for score in scores:
         by_category.setdefault(score.category, []).append(score)
     return GoldenSetReport(
-        mode=resolved,
-        attempts=ATTEMPTS_BY_MODE[resolved],
+        mode=LIVE,
+        attempts=ATTEMPTS_BY_MODE[LIVE],
         categories=tuple(
             CategoryResult(
                 category=category,
@@ -687,23 +660,11 @@ def summarize(
 
 
 def format_report(report: GoldenSetReport) -> str:
-    """The report a reviewer reads. Two verdicts, per-category counts, and the failures.
-
-    The mode line is first and is not decoration: a `replay` report is evidence that the
-    harness and the gate work, and a `live` one is evidence about the model. Printing the
-    numbers without the mode would make those two look like the same claim.
-    """
+    """The report a reviewer reads. Two verdicts, per-category counts, and the failures."""
     lines = [
         "docs/agent_design.md Section 8, tier 2 -- golden set",
-        f"mode: {report.mode} ({report.attempts} attempt(s) per item"
-        + (", all must pass)" if report.attempts > 1 else ")"),
+        f"mode: {report.mode} ({report.attempts} attempt(s) per item, all must pass)",
     ]
-    if report.attempts == 1:
-        lines.append(
-            "  NOTE: a replayed cassette returns one fixed recorded answer, so this run "
-            "measures the harness and the gate, not model stability. Section 8's 3x rule "
-            "needs --mode live."
-        )
     if not report.is_full_set:
         lines.append(
             f"  PARTIAL RUN: {sum(c.total for c in report.categories)} of "
@@ -740,8 +701,8 @@ def format_report(report: GoldenSetReport) -> str:
     if report.errored:
         lines += [
             "",
-            f"{len(report.errored)} item(s) did not run at all. A missing cassette is the "
-            "usual cause: record one per item with --mode record (real, billed calls).",
+            f"{len(report.errored)} item(s) did not run at all -- a missing Anthropic "
+            "credential or an unreachable serving API is the usual cause.",
         ]
     return "\n".join(lines)
 
@@ -756,14 +717,13 @@ def run_golden_set(
     *,
     serving_url: str | None = None,
     db_path: Path | None = None,
-    mode: str | None = None,
 ) -> GoldenSetReport:
     """Run and score every item, then summarize. The whole tier in one call."""
     items = list(items) if items is not None else list(load_golden_set())
     scores = [
-        run_and_score(item, serving_url=serving_url, db_path=db_path, mode=mode) for item in items
+        run_and_score(item, serving_url=serving_url, db_path=db_path) for item in items
     ]
-    return summarize(scores, mode=mode, items=items)
+    return summarize(scores, items=items)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -772,16 +732,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--url", default=None, help="base URL of an already-running serving API"
     )
     parser.add_argument("--db-path", type=Path, default=None, help="inventory database path")
-    parser.add_argument(
-        "--mode",
-        default=None,
-        choices=[REPLAY, RECORD, LIVE],
-        help=(
-            "replay (default): one attempt per item, offline and free. live: three attempts "
-            "per item, all must pass -- real, billed API calls. record: one real call per "
-            "item, overwriting its committed cassette."
-        ),
-    )
     parser.add_argument(
         "--category", action="append", default=None, help="run only this category (repeatable)"
     )
@@ -833,9 +783,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.category:
         wanted = set(args.category)
         items = [item for item in items if item.category in wanted]
-    report = run_golden_set(
-        items, serving_url=args.url, db_path=args.db_path, mode=args.mode
-    )
+    report = run_golden_set(items, serving_url=args.url, db_path=args.db_path)
     print(format_report(report))
     if args.json:
         print()
