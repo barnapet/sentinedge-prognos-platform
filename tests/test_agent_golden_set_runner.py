@@ -22,7 +22,7 @@ from src.agent.mcp import tools
 from src.agent.mcp.readonly_server import READONLY_TOOL_NAMES
 from src.agent.mcp.results import payload_of
 from src.agent.similarity.archive import archive_source_id
-from tests.fixtures.cassette import LIVE, MODE_ENV_VAR, REPLAY
+from tests.fixtures.cassette import LIVE
 from tests.fixtures.golden_set import GoldenSetItem
 from tests.fixtures.golden_set_runner import (
     AGGREGATE_FLOOR,
@@ -40,7 +40,6 @@ from tests.fixtures.golden_set_runner import (
     resolve_tool_name,
     resolve_tool_names,
     run_and_score,
-    run_item,
     score_item,
     summarize,
     unmapped_readonly_tools,
@@ -317,26 +316,17 @@ def test_an_errored_run_fails_without_pretending_its_sub_scores_ran():
     assert any("did not complete" in reason for reason in score.reasons)
 
 
-def test_run_item_reports_a_missing_cassette_as_an_errored_run_rather_than_raising():
-    """The runner never takes down a 30-item run because one item's fixture is absent."""
-    run = run_item(_item(item_id="no-such-item-cassette"))
-    assert run.error is not None
-    assert "cassette" in run.error.lower()
+# --- Attempts: Section 8's 3x non-determinism rule ------------------------------------------
 
 
-# --- Attempts: the cassette-vs-live resolution ---------------------------------------------
-
-
-def test_replay_runs_one_attempt_and_live_runs_three():
-    assert ATTEMPTS_BY_MODE[REPLAY] == 1
+def test_live_runs_three_attempts():
     assert ATTEMPTS_BY_MODE[LIVE] == 3
 
 
-def test_live_mode_passes_only_if_all_three_attempts_pass(monkeypatch):
-    monkeypatch.setenv(MODE_ENV_VAR, LIVE)
+def test_all_three_attempts_must_pass(monkeypatch):
     attempts: list[int] = []
 
-    def _fake_run_item(item, *, serving_url=None, db_path=None, mode=None):
+    def _fake_run_item(item, *, serving_url=None, db_path=None):
         attempts.append(len(attempts) + 1)
         # The second attempt calls an extra tool -- the exact non-determinism Section 8's
         # "an item passes only if all 3 pass" exists to catch.
@@ -350,30 +340,16 @@ def test_live_mode_passes_only_if_all_three_attempts_pass(monkeypatch):
     assert attempts == [1, 2], "a failing attempt should stop the run and be the one reported"
 
 
-def test_live_mode_passing_three_times_passes(monkeypatch):
-    monkeypatch.setenv(MODE_ENV_VAR, LIVE)
+def test_passing_all_three_attempts_passes(monkeypatch):
     attempts: list[int] = []
 
-    def _fake_run_item(item, *, serving_url=None, db_path=None, mode=None):
+    def _fake_run_item(item, *, serving_url=None, db_path=None):
         attempts.append(len(attempts) + 1)
         return _run()
 
     monkeypatch.setattr(golden_set_runner, "run_item", _fake_run_item)
     assert run_and_score(_item()).passed
     assert attempts == [1, 2, 3]
-
-
-def test_replay_mode_runs_each_item_once(monkeypatch):
-    monkeypatch.setenv(MODE_ENV_VAR, REPLAY)
-    attempts: list[int] = []
-
-    def _fake_run_item(item, *, serving_url=None, db_path=None, mode=None):
-        attempts.append(len(attempts) + 1)
-        return _run()
-
-    monkeypatch.setattr(golden_set_runner, "run_item", _fake_run_item)
-    assert run_and_score(_item()).passed
-    assert attempts == [1], "replaying one recorded answer three times measures nothing"
 
 
 # --- Reporting ------------------------------------------------------------------------------
@@ -461,14 +437,9 @@ def test_the_report_text_shows_every_category_individually_and_both_gates():
     assert "7/8" in text and "20/22" in text
 
 
-def test_the_report_text_names_the_mode_and_warns_when_a_replay_measures_no_stability():
-    text = format_report(summarize(_full_set(8, 22), mode=REPLAY))
-    assert "mode: replay" in text
-    assert "not model stability" in text
-
-    live = format_report(summarize(_full_set(8, 22), mode=LIVE))
-    assert "mode: live (3 attempt(s) per item, all must pass)" in live
-    assert "not model stability" not in live
+def test_the_report_text_names_the_mode():
+    text = format_report(summarize(_full_set(8, 22)))
+    assert "mode: live (3 attempt(s) per item, all must pass)" in text
 
 
 def test_category_rate_is_zero_rather_than_undefined_for_an_empty_category():
