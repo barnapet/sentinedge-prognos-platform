@@ -70,7 +70,10 @@ def build_server(
     def get_bearing_status(bearing_id: str | None = None) -> CallToolResult:
         """Current monitoring state for a bearing the serving process is tracking: how many
         windows it has seen, whether its baseline is still warming up, whether any feature
-        is drifting, its latest rms_ratio, and the predicted-class counts so far. Omit
+        is drifting, its latest rms_ratio, and the predicted-class counts so far. Use this
+        only when the question asks about a specific bearing's current or live state --
+        it is not a general evidence-gathering step, and calling it for a documentation
+        question or a question you should refuse does not make either answerable. Omit
         bearing_id to list every tracked bearing. An unknown bearing_id returns a
         not-found, never an invented state."""
         refusal = budget.guard("live_endpoint", DRIFT_ENDPOINT)
