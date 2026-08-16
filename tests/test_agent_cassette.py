@@ -210,6 +210,46 @@ def test_a_schema_change_stales_the_cassette(written, monkeypatch):
             pass
 
 
+def test_a_tool_docstring_edit_stales_the_cassette(written, monkeypatch):
+    """Issue #169: Section 8 names three things a cassette must go stale on -- "a prompt, a
+    tool description, or the model" -- and until now `current_fingerprint()` only checked the
+    first and third. This proves the gap is closed by exercising the real mechanism, not by
+    hand-editing a fingerprint dict as the tests above do: a cassette recorded against today's
+    real tool descriptions, then replayed after one read-only tool's actual `.description`
+    changes, must go stale and must name the field that changed.
+
+    The edit is applied to the already-built `Tool` registration rather than to
+    `readonly_server.py`'s source (the issue's own constraint is not to touch the tool
+    docstrings themselves) -- `MCPServer` has no public "edit an existing tool" call, only
+    `remove_tool` and `add_tool`, so this reads the real tool's function and description
+    through `_tool_manager` and re-registers it under an appended description, which is
+    functionally identical to a technician editing the docstring and restarting the server.
+    """
+    monkeypatch.delenv(MODE_ENV_VAR, raising=False)
+    written("unit", [_interaction()])  # recorded against today's real tool descriptions
+
+    from src.agent.mcp import readonly_server
+
+    real_build_server = readonly_server.build_server
+
+    def build_server_with_an_edited_tool_docstring(*args, **kwargs):
+        server, budget = real_build_server(*args, **kwargs)
+        original = server._tool_manager.get_tool("get_bearing_status")
+        server.remove_tool("get_bearing_status")
+        server.add_tool(
+            original.fn,
+            name=original.name,
+            description=original.description + " Edited for this test only.",
+        )
+        return server, budget
+
+    monkeypatch.setattr(readonly_server, "build_server", build_server_with_an_edited_tool_docstring)
+
+    with pytest.raises(CassetteStale, match="answerer.tool_descriptions_sha256"):
+        with cassette("unit"):
+            pass
+
+
 # --- Divergence is loud too -----------------------------------------------------------------
 
 
