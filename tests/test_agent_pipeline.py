@@ -352,6 +352,107 @@ def test_a_yes_verdict_leaves_the_real_turn_grounded(recorded_turn):
     assert response.grounding_tier == GROUNDED
 
 
+# --- Issue #171: the concept-domain check, wired into this call site ------------------------
+
+
+def test_the_concept_domain_check_leaves_the_real_recorded_turn_untouched(recorded_turn):
+    """The first thing a new gate has to prove: it does not demote a true claim. The recorded
+    turn's claim 0 cites `GET /monitoring/drift` and nothing else — precisely the case that had
+    no relevance check at all — and `scored`/`windows` are what that source reports on, so it
+    survives and the turn is still `grounded` with no model call made."""
+    from src.agent.critic.relevance import check_claim_domain, off_domain_demotions
+
+    evidence = evidence_for(recorded_turn)
+    report = verify(recorded_turn.draft, evidence)
+    checked = check_claim_domain(recorded_turn.draft.claims[0], evidence)
+
+    assert checked.checked is True, "the live-only claim really is evaluated by this check"
+    assert checked.off_domain is False
+    assert off_domain_demotions(report, evidence) == {}
+
+    response = asyncio.run(verify_turn_async(recorded_turn, escalate=False))
+    assert response.grounding_tier == GROUNDED
+    assert len(response.claims) == len(recorded_turn.draft.claims)
+
+
+def test_an_off_domain_live_claim_is_demoted_with_no_api_key_and_no_escalation(recorded_turn):
+    """The check reaches the response through `escalate=False`, which is what makes it
+    deterministic-tier: same real payloads, one claim replaced with an off-domain one, no
+    critic client anywhere."""
+    from src.agent.answerer import Claim
+    from src.agent.critic.grounding import OFF_DOMAIN_REASON
+
+    off_domain = Claim(
+        text="The oil temperature alarm setpoint for this machine is configured at the rig.",
+        source_ids=["GET /monitoring/drift"],
+    )
+    turn = turn_from_payloads(
+        Draft(
+            claims=[off_domain, *recorded_turn.draft.claims[1:]],
+            recommendation=None,
+            unanswered=[],
+        ),
+        [dict(payload) for payload in recorded_turn.tool_payloads],
+    )
+
+    response = asyncio.run(verify_turn_async(turn, escalate=False))
+
+    assert response.grounding_tier == PARTIAL
+    assert off_domain.text not in {claim.text for claim in response.claims}
+    (dropped,) = response.dropped
+    assert dropped.text == off_domain.text
+    assert dropped.reasons == (f"{OFF_DOMAIN_REASON} (checked against GET /monitoring/drift)",)
+
+
+def test_both_demotion_sources_merge_and_neither_reason_is_lost(recorded_turn):
+    """The merge at this call site, on a claim both sources demote. `grounding.py` reports one
+    reason per drop, so the two are joined rather than one overwriting the other — and the
+    escalation set is unchanged by the deterministic demotion above it, so the number of model
+    calls is still Section 6's rule and nothing else."""
+    from src.agent.answerer import Claim
+    from src.agent.critic.grounding import DEMOTED_REASON, OFF_DOMAIN_REASON
+
+    # Cites the live source (off-domain for it) *and* a prose chunk the recorded turn really
+    # retrieved, so trigger (b) can fire on the prose while this check fires on the live id.
+    both = Claim(
+        text="The oil temperature alarm setpoint for this machine is configured at the rig.",
+        source_ids=["GET /monitoring/drift", "docs/class_imbalance_decision.md::9"],
+    )
+    live_only = Claim(
+        text="The lockout procedure must be completed before the housing cover is opened.",
+        source_ids=["GET /monitoring/drift"],
+    )
+    # The recommendation is what makes the merge reachable at all, and it is #119's rule rather
+    # than a fixture convenience: trigger (b) is prose-scoped, so a live-only claim is escalated
+    # only when the draft carries a recommendation (trigger (a)), which considers every cited
+    # source. Without one, `live_only` would be demoted by this check and never seen by the LLM
+    # tier — the case the test above already covers.
+    turn = turn_from_payloads(
+        Draft(
+            claims=[both, live_only],
+            recommendation="Order 1 x ZA-2115 for this bearing.",
+            unanswered=[],
+        ),
+        [dict(payload) for payload in recorded_turn.tool_payloads],
+    )
+    critic = _StubCritic("no")
+
+    response = asyncio.run(verify_turn_async(turn, critic_client=critic, escalate=True))
+
+    # `both` cites prose, so this check does not evaluate it; the LLM tier does, and demotes it.
+    # `live_only` cites the live source alone: demoted here, and — because the escalation set is
+    # computed from the deterministic report alone — still put to the critic, which also demotes
+    # it. That claim is the one carrying two reasons.
+    reasons = {dropped.text: dropped.reasons for dropped in response.dropped}
+    assert reasons[both.text] == (
+        f"{DEMOTED_REASON} (checked against docs/class_imbalance_decision.md::9: no)",
+    )
+    (merged,) = reasons[live_only.text]
+    assert merged.startswith(f"{OFF_DOMAIN_REASON} (checked against GET /monitoring/drift)")
+    assert merged.endswith(f"{DEMOTED_REASON} (checked against GET /monitoring/drift: no)")
+    assert response.grounding_tier == UNGROUNDED, "no claim survived either check"
+
+
 # --- 4. The join: `answer_and_verify` with a replayed tool_runner --------------------------
 
 

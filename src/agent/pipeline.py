@@ -15,10 +15,13 @@ nothing here re-implements either of them:
    (Section 6, step 1).
 3. The deterministic checks run on every response, before any LLM critic (Section 6, step 3).
 4. Retrieval confidence is scored from the same evidence (step 4).
-5. The LLM critic runs **only** when Section 6's escalation rule fires — a clean
+5. The concept-domain check (`relevance.py`, Issue #171) demotes any surviving claim whose
+   only sources are live-tool/inventory results that do not report on what it is about. No
+   model call, so it runs on every turn — including one with `escalate=False`.
+6. The LLM critic runs **only** when Section 6's escalation rule fires — a clean
    deterministic pass plus either a recommendation or a claim whose lexical overlap with its
    cited chunk is below the floor. On a typical documentation question it costs nothing.
-6. `grounding.assemble` produces the three-tier response.
+7. `grounding.assemble` produces the three-tier response.
 
 **The order is the contract, not an implementation detail.** Deterministic before LLM, and
 the LLM only on escalation, is Section 6's answer to "why not LLM-only" — the citation check
@@ -41,6 +44,7 @@ from src.agent.answerer import AnsweredTurn, Draft, answer_turn_async
 from src.agent.critic.deterministic import DeterministicReport, TurnEvidence, verify
 from src.agent.critic.escalation import escalate_async, escalations_needed
 from src.agent.critic.grounding import GroundedResponse, assemble
+from src.agent.critic.relevance import off_domain_demotions
 from src.agent.critic.retrieval_confidence import assess_evidence
 from src.agent.untrusted import UntrustedEnvelope
 
@@ -58,18 +62,32 @@ async def verify_turn_async(
 
     `escalate=False` runs the deterministic tiers only. It is not a way to skip the LLM
     critic in production; it is how a caller with no credentials still gets Section 6's other
-    three steps, and the response says which it got through `report.clean` and the demotions
-    it carries.
+    steps — the concept-domain check among them, since it needs no model — and the response
+    says which it got through `report.clean` and the demotions it carries.
+
+    **Two demotion sources, merged into the one mapping `assemble` takes.** The deterministic
+    concept-domain check runs first and unconditionally; the LLM tier's demotions are merged
+    on top. A claim both of them demote keeps **both** reasons, joined, rather than one
+    overwriting the other: `grounding.py` reports one reason per drop from this mapping, and a
+    silently discarded reason is the same "the user cannot see what happened" failure a
+    silently dropped claim would be. The escalation set is deliberately computed from the
+    deterministic report alone, unfiltered by the demotions above it — which claims are put to
+    the critic stays a property of Section 6's rule, so a recorded turn's model calls do not
+    change with this module's registry.
     """
     evidence = TurnEvidence.from_tool_payloads(turn.tool_payloads)
     report: DeterministicReport = verify(turn.draft, evidence)
     retrieval = assess_evidence(evidence)
 
-    demotions: dict[int, str] = {}
+    demotions: dict[int, str] = off_domain_demotions(report, evidence)
     if escalate:
         requests = escalations_needed(turn.draft, report, evidence)
         if requests:
-            demotions = dict(await escalate_async(requests, client=critic_client))
+            for index, reason in (
+                await escalate_async(requests, client=critic_client)
+            ).items():
+                already = demotions.get(index)
+                demotions[index] = f"{already}; {reason}" if already else reason
 
     return assemble(
         turn.draft,
