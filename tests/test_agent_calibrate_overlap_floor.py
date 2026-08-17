@@ -393,9 +393,69 @@ def test_the_recommendation_maximizes_answerable_pass_before_anything_else():
 def test_the_lowest_floor_wins_a_tie_because_it_escalates_fewest_pairs():
     """Two floors with the same verdicts and the same margin differ only in cost, and each
     escalation is a model call on every real turn."""
-    baseline = _cell(CURRENT_FLOOR, refuse=7, answerable=5)
-    cells = [baseline, _cell(0.85, refuse=7, answerable=5, pairs=9)]
+    baseline = _cell(0.50, refuse=7, answerable=5)
+    cells = [_cell(0.80, refuse=7, answerable=5, pairs=4), _cell(0.85, refuse=7, answerable=5)]
+    assert recommend(cells, baseline).floor == 0.80
+
+
+def test_a_flat_sweep_recommends_the_current_floor_rather_than_the_first_row():
+    """The case the real run produced, and the one a tie-break must not dress up as a finding.
+
+    Every floor scores identically, so nothing measured argues for a change -- and a
+    recommendation of 0.40 "because it sorted first" would be read as a measured improvement.
+    The current value wins any tie it is part of.
+    """
+    baseline = _cell(CURRENT_FLOOR, refuse=0, answerable=1, pairs=86)
+    cells = [_cell(floor, refuse=0, answerable=1, pairs=86) for floor in FLOOR_CANDIDATES]
     assert recommend(cells, baseline).floor == CURRENT_FLOOR
+
+
+def test_a_measured_improvement_still_beats_the_current_floor():
+    """The rule above is a tie-break, not a bias: a floor that actually passes one more item
+    wins, and the current value's tie-break privilege never reaches that comparison."""
+    baseline = _cell(CURRENT_FLOOR, refuse=7, answerable=5)
+    better = _cell(0.85, refuse=7, answerable=6)
+    assert recommend([baseline, better], baseline) is better
+
+
+def test_the_null_result_is_stated_next_to_the_number_a_reader_will_quote():
+    baseline = _cell(CURRENT_FLOOR, refuse=0, answerable=1, pairs=86)
+    text = "\n".join(format_recommendation(baseline, baseline, floor_sensitive=0))
+
+    assert "NULL RESULT" in text
+    assert "no reason to change the floor" in text
+    assert "measured to be optimal" in text
+
+
+def test_a_sweep_that_moved_something_carries_no_null_result_notice():
+    baseline = _cell(CURRENT_FLOOR, refuse=7, answerable=5)
+    text = "\n".join(format_recommendation(baseline, baseline, floor_sensitive=2))
+    assert "NULL RESULT" not in text
+
+
+def test_the_table_separates_escalations_the_floor_causes_from_the_ones_it_inherits():
+    """A claim already escalating under trigger (a) does not become the floor's doing when the
+    floor rises past its overlap. The two columns are what makes a flat sweep readable."""
+    measured = _answerable_turn(verdict="yes")
+    with_recommendation = MeasuredTurn(
+        item=measured.item,
+        turn=turn_from_payloads(
+            Draft(
+                claims=list(measured.turn.draft.claims),
+                recommendation="Keep monitoring the bearing.",
+                unanswered=[],
+            ),
+            measured.turn.tool_payloads,
+        ),
+        evidence=measured.evidence,
+        report=measured.report,
+        verdicts=measured.verdicts,
+    )
+    low, high = evaluate([with_recommendation], 0.40), evaluate([with_recommendation], 0.95)
+
+    assert low.escalated_pairs == high.escalated_pairs == 1
+    assert low.lexical_pairs == 0
+    assert high.lexical_pairs == 1
 
 
 def test_the_margin_tie_break_prefers_a_floor_that_is_not_sitting_on_a_measured_overlap():

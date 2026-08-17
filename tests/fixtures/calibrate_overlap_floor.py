@@ -550,6 +550,14 @@ class SweepCell:
     answerable_passed: int
     answerable_total: int
     escalated_pairs: int
+    # How many of `escalated_pairs` this floor is the *reason* for -- `escalations_needed`
+    # labels each request with the trigger that claimed it, and a claim already escalating under
+    # trigger (a) (the draft carries a recommendation) escalates identically whatever the floor
+    # is. Reported separately because the two columns can move in opposite directions: a sweep
+    # in which `escalated_pairs` is flat while this one climbs is a sweep in which the floor is
+    # relabelling escalations it is not causing, which is a null result wearing a busy table's
+    # clothes.
+    lexical_pairs: int = 0
     passing_item_ids: tuple[str, ...] = ()
 
     def feasible(self, baseline: "SweepCell") -> bool:
@@ -577,6 +585,12 @@ def evaluate(measured: Sequence[MeasuredTurn], floor: float) -> SweepCell:
         ),
         answerable_total=sum(1 for turn, _ in scores if not turn.is_must_refuse),
         escalated_pairs=sum(len(turn.requests_at(floor)) for turn in measured),
+        lexical_pairs=sum(
+            1
+            for turn in measured
+            for request in turn.requests_at(floor)
+            if request.trigger == "lexical_overlap"
+        ),
         passing_item_ids=tuple(
             turn.item_id for turn, score in scores if score.passed
         ),
@@ -617,12 +631,19 @@ def recommend(
        only ever chooses between floors that already tie on the objective, and there the
        safety-relevant category is the one Section 8 gates at 100% -- taking the floor that
        refuses one *more* out-of-corpus question costs nothing measured.
-    4. **The largest distance to the nearest measured overlap.** Ties here are floors that gate
+    4. **The current floor, if it is still among them.** A tie means the measurement found no
+       difference between these floors, and "no difference" is not a reason to move a production
+       constant -- it is the reason not to. Ranking this above the two tie-breaks below is what
+       keeps a flat sweep from being reported as a change: without it, a run in which every floor
+       scores identically recommends whichever floor sorts first, which reads as a measured
+       improvement and is not one.
+    5. **The largest distance to the nearest measured overlap.** Ties here are floors that gate
        today's measured pairs identically; the one sitting in the middle of a gap is the one
        that keeps gating that way when a draft is reworded slightly.
-    5. **The lowest floor** among what remains. A tie at this point is a set of floors with the
+    6. **The lowest floor** among what remains. A tie at this point is a set of floors with the
        same verdicts and the same margin, so the cheapest is the honest choice: a lower floor
-       escalates strictly fewer pairs, and each escalation is a model call on every real turn.
+       escalates no more pairs than a higher one, and each escalation is a model call on every
+       real turn.
 
     `None` only when there are no cells at all. It is not the "no feasible candidate" branch
     `calibrate_retrieval` has -- the baseline satisfies its own constraint, so a recommendation
@@ -635,7 +656,12 @@ def recommend(
     best_rate = max(cell.answerable_passed for cell in feasible)
     return min(
         (cell for cell in feasible if cell.answerable_passed == best_rate),
-        key=lambda cell: (-cell.refuse_passed, -_margin(cell, overlaps), cell.floor),
+        key=lambda cell: (
+            -cell.refuse_passed,
+            cell.floor != CURRENT_FLOOR,
+            -_margin(cell, overlaps),
+            cell.floor,
+        ),
     )
 
 
@@ -835,13 +861,16 @@ def format_sweep(
 
     The rejected rows are printed and marked rather than dropped: "this floor would score better
     on the answerable half if the must-refuse constraint did not exist" is exactly the trade a
-    reader is entitled to watch being refused. `pairs` is the number of claim/chunk pairs that
-    escalate across the whole swept set at that floor -- the per-sweep model-call count, and the
-    cost side of the trade.
+    reader is entitled to watch being refused.
+
+    `pairs` is how many claim/chunk pairs escalate across the whole swept set at that floor --
+    the per-turn model-call count, and the cost side of the trade -- and `by floor` is how many
+    of them this floor is the reason for. The two are printed side by side because their
+    *difference* is the reading a flat table needs: escalations that trigger (a) already claimed
+    do not become the floor's doing when it rises past their overlap, and a column that pooled
+    them would show a busy sweep where nothing is happening.
     """
-    header = (
-        "  floor    must-refuse    answerable    pairs   note"
-    )
+    header = "  floor    must-refuse    answerable    pairs  by floor   note"
     lines = [
         "full sweep -- Section 8 scoring at each candidate floor:",
         "",
@@ -866,7 +895,8 @@ def format_sweep(
                 f"  {cell.floor:>5.2f}    "
                 f"{cell.refuse_passed:>2d}/{cell.refuse_total:<2d}         "
                 f"{cell.answerable_passed:>2d}/{cell.answerable_total:<2d}        "
-                f"{cell.escalated_pairs:>3d}   {' '.join(notes)}"
+                f"{cell.escalated_pairs:>3d}       {cell.lexical_pairs:>3d}   "
+                f"{' '.join(notes)}"
             ).rstrip()
         )
     lines.append("")
@@ -904,7 +934,18 @@ def format_reach(reach: Sequence[Reach]) -> list[str]:
     return lines
 
 
-def format_recommendation(best: SweepCell | None, baseline: SweepCell) -> list[str]:
+def format_recommendation(
+    best: SweepCell | None, baseline: SweepCell, *, floor_sensitive: int = -1
+) -> list[str]:
+    """The recommendation, and -- when the sweep was flat -- the fact that it is a null result.
+
+    `floor_sensitive` is how many items any swept floor moved. Zero is not a quiet detail to
+    leave in the section above: it means every row of the table is the same measurement, so the
+    recommended value is the current one *for want of evidence to move it*, not because it won a
+    comparison. Saying that here, next to the number a reader will quote, is the difference
+    between a null result and a recommendation that looks measured and is not. `-1` means the
+    caller did not compute it (a hand-built report in a test).
+    """
     if best is None:
         return [
             "RECOMMENDATION: none.",
@@ -918,9 +959,22 @@ def format_recommendation(best: SweepCell | None, baseline: SweepCell) -> list[s
         if best.floor == CURRENT_FLOOR
         else f"change {CURRENT_FLOOR} -> {best.floor:.2f}"
     )
+    null_result = (
+        [
+            "  NULL RESULT: no swept floor changed any item's verdict, so every row above is",
+            "  the same measurement and none of them is evidence for a change. The value below",
+            "  is the current one because nothing measured argues for moving it -- read it as",
+            "  'this sweep found no reason to change the floor', never as 'the floor was",
+            "  measured to be optimal'.",
+            "",
+        ]
+        if floor_sensitive == 0
+        else []
+    )
     return [
         "RECOMMENDATION:",
         "",
+        *null_result,
         f"  LEXICAL_OVERLAP_FLOOR = {best.floor:.2f}   (currently {CURRENT_FLOOR}) -- {verdict}",
         "",
         f"  must-refuse passing : {best.refuse_passed}/{best.refuse_total}  "
@@ -982,12 +1036,15 @@ def format_report(
         "                         3-of-3 gate -- see `measure_item_async`)",
         "",
     ]
+    reach = reaches(measured, cells)
     lines += format_errors(collection.errors)
     lines += format_measurements(measured)
     lines += format_separability(measured)
     lines += format_sweep(cells, baseline, best)
-    lines += format_reach(reaches(measured, cells))
-    lines += format_recommendation(best, baseline)
+    lines += format_reach(reach)
+    lines += format_recommendation(
+        best, baseline, floor_sensitive=sum(1 for entry in reach if entry.floor_sensitive)
+    )
     return "\n".join(lines)
 
 
