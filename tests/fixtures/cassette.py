@@ -191,6 +191,29 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _tool_descriptions_sha256() -> str:
+    """A hash of the read-only server's tools, name and description, sorted by name.
+
+    These are the answerer's tools (Section 5's agent boundaries), and their descriptions
+    reach the model exactly as the system prompt does -- in the request the cassette
+    records. `build_server()` needs no arguments for this: nothing here calls a tool, so the
+    base URL, database path and search function it would otherwise bind are irrelevant to
+    what gets registered and listed. Sorted by name before canonicalizing, the same
+    determinism `draft_schema_sha256` gets for free from a schema that is already one object.
+    """
+    import asyncio
+
+    from src.agent.mcp.readonly_server import build_server as build_readonly_server
+
+    server, _budget = build_readonly_server()
+    tools = asyncio.run(server.list_tools())
+    described = sorted(
+        ({"name": tool.name, "description": tool.description} for tool in tools),
+        key=lambda entry: entry["name"],
+    )
+    return _sha256(_canonical(described))
+
+
 def current_fingerprint() -> dict[str, Any]:
     """The prompts and request configuration a cassette recorded now would be recording.
 
@@ -203,6 +226,12 @@ def current_fingerprint() -> dict[str, Any]:
     Imported from `src/agent/` rather than restated, for the same reason `train_serving_model`
     imports its configuration instead of re-declaring it: a fingerprint that could drift from
     what the code actually sends would report freshness it has not checked.
+
+    `tool_descriptions_sha256` lives in the `answerer` section, not a section of its own: the
+    read-only tools it hashes are the answerer's only tool source (`readonly_tools()`), so a
+    tool-description edit is a change to what the answerer sends, the same as its system
+    prompt. Section 8 names three things a cassette must go stale on -- "a prompt, a tool
+    description, or the model" -- and this is the middle one, previously unchecked.
     """
     from src.agent import answerer
     from src.agent.critic import escalation
@@ -215,6 +244,7 @@ def current_fingerprint() -> dict[str, Any]:
             "thinking": answerer.THINKING,
             "system_prompt_sha256": _sha256(answerer.SYSTEM_PROMPT),
             "draft_schema_sha256": _sha256(_canonical(answerer.draft_schema())),
+            "tool_descriptions_sha256": _tool_descriptions_sha256(),
         },
         "critic": {
             "model": escalation.MODEL,
