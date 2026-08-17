@@ -30,12 +30,16 @@ from tests.fixtures import calibrate_overlap_floor as calibrate
 from tests.fixtures.calibrate_overlap_floor import (
     CURRENT_FLOOR,
     FLOOR_CANDIDATES,
+    Collection,
+    CollectionError,
     MeasuredTurn,
     SweepCell,
     VerdictMissing,
     _VerdictReplay,
+    any_prose,
     baseline_cell,
     evaluate,
+    format_errors,
     format_reach,
     format_recommendation,
     format_separability,
@@ -428,7 +432,7 @@ def test_a_saved_collection_round_trips_into_the_same_sweep():
     payload = json.loads(json.dumps(measurements_as_dict(measured)))
     replayed = measurements_from_dict(payload)
 
-    assert sweep(replayed) == sweep(measured)
+    assert sweep(replayed.turns) == sweep(measured)
 
 
 def test_a_saved_turn_the_golden_set_does_not_recognise_is_an_error_not_a_skip():
@@ -437,6 +441,38 @@ def test_a_saved_turn_the_golden_set_does_not_recognise_is_an_error_not_a_skip()
     payload["turns"][0]["item_id"] = "corpus-refuse-a-question-nobody-wrote"
     with pytest.raises(KeyError):
         measurements_from_dict(payload)
+
+
+def test_an_errored_item_survives_the_round_trip_and_is_named_in_the_report():
+    """A billed run that lost an item must say so where the numbers are: an errored item is the
+    absence of a result, and it contributes to no row -- so the denominators stay honest."""
+    collection = Collection(
+        turns=(_refuse_turn(),),
+        errors=(CollectionError("corpus-refuse-last-service-date", "ServingUnreachable: down"),),
+    )
+    replayed = measurements_from_dict(json.loads(json.dumps(measurements_as_dict(collection))))
+    assert replayed.errors == collection.errors
+
+    text = "\n".join(format_errors(replayed.errors))
+    assert "corpus-refuse-last-service-date" in text
+    assert "did not measure at all" in text
+    assert "not a verdict on the full 16" in text
+
+
+def test_a_collection_with_no_prose_citing_claim_recommends_nothing():
+    """With no measured pair for the floor to threshold, every row is identical and a value
+    picked from them would be a value nobody measured. `main` refuses, and exits non-zero."""
+    payload = {
+        "source": {"source_type": "live_endpoint", "source_id": "GET /monitoring/drift"},
+        "data": {"status": {"file_count": 197}},
+    }
+    live_only = _measured(
+        _ANSWERABLE_ITEM,
+        [_claim("Bearing 2nd_test-demo is tracked.", "GET /monitoring/drift")],
+        [payload],
+        {},
+    )
+    assert not any_prose([live_only])
 
 
 # --- Reporting -----------------------------------------------------------------------------

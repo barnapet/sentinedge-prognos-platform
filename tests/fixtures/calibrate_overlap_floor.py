@@ -384,13 +384,36 @@ async def measure_item_async(
     )
 
 
+@dataclass(frozen=True)
+class CollectionError:
+    """An item whose measurement could not be made at all.
+
+    Kept separate from a failing score, for `golden_set_runner.ItemRun`'s reason: a failed item
+    is a result and an errored one is the absence of one. An errored item contributes to no row
+    of the sweep and is named in the report instead, because silently dropping it would shrink
+    every row's denominator by one and make the table look better than the run was.
+    """
+
+    item_id: str
+    error: str
+
+
+@dataclass(frozen=True)
+class Collection:
+    """Everything one collection run produced: the measured turns, and what did not measure."""
+
+    turns: tuple[MeasuredTurn, ...] = ()
+    errors: tuple[CollectionError, ...] = ()
+
+
 def collect(
     items: Sequence[GoldenSetItem] = CORPUS_ITEMS,
     *,
     serving_url: str | None = None,
     db_path: Path | None = None,
     floors: Sequence[float] = FLOOR_CANDIDATES,
-) -> tuple[MeasuredTurn, ...]:
+    save_to: Path | None = None,
+) -> Collection:
     """Measure every item, against the real API.
 
     `CORPUS_ITEMS` is the default swept set for `calibrate_retrieval.collect_scores`' reason,
@@ -399,6 +422,11 @@ def collect(
     tool-grounded, inventory and similarity items reach their evidence through a live tool, so a
     *prose* overlap floor calibrated on them would be calibrated on chunks they never cite. Which
     items actually produced a prose-citing claim is reported rather than assumed.
+
+    **One item's failure never discards another item's measurement.** The calls here are billed,
+    so an unreachable tool on item 12 must not throw away the eleven turns already paid for: a
+    failure is recorded against that item and the run continues, and `save_to` is rewritten after
+    every item so an interrupted run leaves a usable collection on disk rather than nothing.
     """
 
     async def _run(item: GoldenSetItem) -> MeasuredTurn:
@@ -409,7 +437,18 @@ def collect(
             item, client=client, serving_url=serving_url, db_path=db_path, floors=floors
         )
 
-    return tuple(asyncio.run(_run(item)) for item in items)
+    turns: list[MeasuredTurn] = []
+    errors: list[CollectionError] = []
+    for item in items:
+        try:
+            turns.append(asyncio.run(_run(item)))
+            print(f"  measured {item.item_id}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 -- an errored item is reported, never fatal
+            errors.append(CollectionError(item.item_id, f"{type(exc).__name__}: {exc}"))
+            print(f"  FAILED   {item.item_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if save_to is not None:
+            save(Collection(tuple(turns), tuple(errors)), save_to)
+    return Collection(tuple(turns), tuple(errors))
 
 
 # --------------------------------------------------------------------------------------
@@ -417,8 +456,11 @@ def collect(
 # --------------------------------------------------------------------------------------
 
 
-def measurements_as_dict(measured: Sequence[MeasuredTurn]) -> dict[str, Any]:
+def measurements_as_dict(collection: Collection | Sequence[MeasuredTurn]) -> dict[str, Any]:
     """A collection as data, so the expensive half runs once and the sweep stays auditable."""
+    collection = (
+        collection if isinstance(collection, Collection) else Collection(tuple(collection))
+    )
     return {
         "floors": list(FLOOR_CANDIDATES),
         "current_floor": CURRENT_FLOOR,
@@ -433,14 +475,25 @@ def measurements_as_dict(measured: Sequence[MeasuredTurn]) -> dict[str, Any]:
                     for (index, source_id), verdict in sorted(turn.verdicts.items())
                 ],
             }
-            for turn in measured
+            for turn in collection.turns
+        ],
+        "errors": [
+            {"item_id": failure.item_id, "error": failure.error}
+            for failure in collection.errors
         ],
     }
 
 
+def save(collection: Collection, path: Path) -> None:
+    """Write a collection where the sweep can be re-run from it without any call."""
+    path.write_text(
+        json.dumps(measurements_as_dict(collection), indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def measurements_from_dict(
     payload: Mapping[str, Any], items: Sequence[GoldenSetItem] = CORPUS_ITEMS
-) -> tuple[MeasuredTurn, ...]:
+) -> Collection:
     """Rebuild a collection, through `pipeline.turn_from_payloads` -- the documented seam.
 
     An entry whose `item_id` is not in `items` is an error rather than a skip: a saved turn the
@@ -473,7 +526,13 @@ def measurements_from_dict(
                 },
             )
         )
-    return tuple(rebuilt)
+    return Collection(
+        tuple(rebuilt),
+        tuple(
+            CollectionError(record["item_id"], record["error"])
+            for record in payload.get("errors", ())
+        ),
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -590,6 +649,11 @@ def _margin(cell: SweepCell, overlaps: Sequence[float]) -> float:
     floor rather than to grid order.
     """
     return min((abs(cell.floor - overlap) for overlap in overlaps), default=0.0)
+
+
+def any_prose(measured: Sequence[MeasuredTurn]) -> bool:
+    """Whether the collection contains a single claim the floor could threshold."""
+    return any(turn.cites_prose for turn in measured)
 
 
 def all_overlaps(measured: Sequence[MeasuredTurn]) -> tuple[float, ...]:
@@ -874,14 +938,31 @@ def format_recommendation(best: SweepCell | None, baseline: SweepCell) -> list[s
     ]
 
 
+def format_errors(errors: Sequence[CollectionError]) -> list[str]:
+    """The items that did not measure, named. Empty when every item measured."""
+    if not errors:
+        return []
+    return [
+        f"{len(errors)} item(s) did not measure at all, and contribute to no row below:",
+        "",
+        *(f"  {failure.item_id:<48s} {failure.error}" for failure in errors),
+        "",
+        "  An unreachable serving API, a Qdrant that is down or a missing credential is the",
+        "  usual cause. The rows below are a sweep over the items that did measure, and their",
+        "  denominators say so -- they are not a verdict on the full 16.",
+        "",
+    ]
+
+
 def format_report(
-    measured: Sequence[MeasuredTurn],
+    collection: Collection,
     cells: Sequence[SweepCell],
     baseline: SweepCell,
     best: SweepCell | None,
     *,
     source: str,
 ) -> str:
+    measured = collection.turns
     prose = sum(1 for turn in measured if turn.cites_prose)
     critic_calls = sum(len(turn.verdicts) for turn in measured)
     lines = [
@@ -901,6 +982,7 @@ def format_report(
         "                         3-of-3 gate -- see `measure_item_async`)",
         "",
     ]
+    lines += format_errors(collection.errors)
     lines += format_measurements(measured)
     lines += format_separability(measured)
     lines += format_sweep(cells, baseline, best)
@@ -940,21 +1022,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.measurements is not None:
         payload = json.loads(args.measurements.read_text(encoding="utf-8"))
-        measured = measurements_from_dict(payload)
+        collection = measurements_from_dict(payload)
         source = f"replayed from {args.measurements}"
     else:
-        measured = collect(serving_url=args.url, db_path=args.db_path)
+        collection = collect(
+            serving_url=args.url, db_path=args.db_path, save_to=args.save
+        )
         source = "real answerer + critic calls, made now"
         if args.save is not None:
-            args.save.write_text(
-                json.dumps(measurements_as_dict(measured), indent=2) + "\n", encoding="utf-8"
-            )
             source += f", saved to {args.save}"
 
+    measured = collection.turns
     cells = sweep(measured)
     baseline = baseline_cell(measured)
-    best = recommend(cells, baseline, measured)
-    print(format_report(measured, cells, baseline, best, source=source))
+    # No prose-citing claim anywhere in the collection means no measured pair for the floor to
+    # be a threshold on, and a value recommended from that would be a value nobody measured --
+    # so the run says so and recommends nothing, rather than reporting whichever row sorted
+    # first among rows that are all identical. Exit code follows.
+    best = recommend(cells, baseline, measured) if any_prose(measured) else None
+    print(format_report(collection, cells, baseline, best, source=source))
     return 0 if best is not None else 1
 
 
