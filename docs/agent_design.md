@@ -800,6 +800,27 @@ documentation question, neither fires and the critic costs nothing.
 > 0.417 — stays with Section 8's golden-set calibration, which now has real measurements to
 > work from.
 
+> **Addendum (Issue #171): the gap the note above names is now closed deterministically.**
+> "A claim citing only `live_endpoint`/`inventory` sources has no overlap check run against it
+> at all" was a correct scoping decision and a real hole: the four checks above do not read
+> `source_type`, so a speculative tool call that returns *real data about something else* leaves
+> a claim that passes every one of them. `src/agent/critic/relevance.py` adds a fifth
+> deterministic check for exactly that case — a **closed registry mapping each live-tool and
+> inventory `source_id` to a concept domain** (the vocabulary its own payload keys, values and
+> features are written in), and a claim whose content words intersect *none* of the domains of
+> the sources it cites is demoted. It is not the prose measure applied to JSON, which is what
+> #119 rules out: nothing is compared against the payload's text, only against a domain
+> declared per source. Four properties: it is **pure set operations, no model call**, so it runs
+> on every turn including one with no credentials; it reaches the response through
+> `assemble`'s `demotions`, so the tier logic above is untouched and a demoted claim is dropped
+> and named like any other; it **fails open** three ways (a prose source cited alongside, any
+> cited source the registry has no entry for — the docs-search wrapper and the hash-suffixed
+> trajectory archive are both deliberately unregistered — and a claim already failing a check
+> above); and **the domains are a starting point, not a calibrated answer**. Their measurement
+> belongs to Section 8's golden set, the same standing this section gives the overlap floor: too
+> narrow shows up as a demoted true claim in the answerable categories, too wide as a
+> must-refuse item that still passes.
+
 **What the LLM critic is asked** is narrow and closed: *"Does chunk S support claim C?
 yes / no / unclear."* One claim, one chunk, no question, no draft framing, no conversation. It
 is not asked "is this a good answer" — a broad quality judgement is where LLM critics are least

@@ -12,6 +12,9 @@ What is asserted here:
   answers un-grounded, and it never silently drops a claim.
 - **The escalation rule**, on hand-built inputs rather than a live call: clean pass plus a
   recommendation, or clean pass plus overlap below the floor, and nothing otherwise.
+- **The concept-domain relevance check** (Issue #171): the registry's ids are the ones the tool
+  layer really mints, a claim inside its cited source's domain survives, one outside it is
+  demoted, and a claim citing prose alongside is not evaluated here at all.
 - **The critic holds no tools**, structurally: nothing in the package can reach the tool
   layer, and the request it builds carries no tool argument.
 
@@ -64,11 +67,27 @@ from src.agent.critic.escalation import (
 )
 from src.agent.critic.grounding import (
     GROUNDED,
+    OFF_DOMAIN_REASON,
     PARTIAL,
     UNGROUNDED,
     UNGROUNDED_ANSWER,
     UNSOURCED_PREFIX,
     assemble,
+)
+from src.agent.critic.relevance import (
+    CONCEPT_DOMAINS,
+    DRIFT_SOURCE_ID,
+    INVENTORY_ORDERS_SOURCE_ID,
+    PREDICT_SOURCE_ID,
+    REGISTERED_SOURCE_IDS,
+    check_claim_domain,
+    domain_for,
+    off_domain_demotions,
+)
+from src.agent.critic.relevance import (
+    # Aliased: `src.agent.mcp.tools` exports the same name, and the one test that compares the
+    # two needs both of them unambiguously.
+    INVENTORY_SOURCE_ID as INVENTORY_DOMAIN_SOURCE_ID,
 )
 from src.agent.critic.retrieval_confidence import (
     MIN_SUPPORTING_CHUNKS,
@@ -89,6 +108,7 @@ CRITIC_MODULES = (
     "src.agent.critic.retrieval_confidence",
     "src.agent.critic.grounding",
     "src.agent.critic.escalation",
+    "src.agent.critic.relevance",
 )
 
 # One real chunk's worth of text, quoting real numbers from this repo's own decision docs —
@@ -795,6 +815,214 @@ def test_source_type_survives_from_tool_payloads_at_both_levels():
         ("SEARCH prognos_docs", "live_endpoint"),
         (CHUNK_ID, "decision_doc"),
     ]
+
+
+# --- Issue #171: the concept-domain relevance check ----------------------------------------
+#
+# The gap #119 left named and open, closed by a check that reads *subject matter* rather than
+# containment: a claim citing only live-tool/inventory sources had no relevance check at all.
+# Every test below is tier 1 in the strict sense — the module cannot make a call, and these
+# assert on set operations over hand-built drafts and one real recorded payload shape.
+
+# The off-domain claim is `golden_set_corpus.py`'s `corpus-refuse-oil-temperature-setpoint`
+# case, in the shape the answerer would have to write it to reach the critic at all: no number
+# (so numeric fidelity has nothing to fail on) and a real, citable, minted id. Section 8 calls
+# this one's trap adjacency — the system does have a monitoring surface, and it has no notion
+# of temperature whatsoever.
+OFF_DOMAIN_LIVE_CLAIM = Claim(
+    text="The oil temperature alarm setpoint for this machine is configured at the rig.",
+    source_ids=[LIVE_ID],
+)
+
+
+def test_the_registrys_ids_are_the_ones_the_tool_layer_actually_mints():
+    """Anti-drift, and the reason the registry may not simply import them: Section 5 forbids
+    the critic from importing the tool layer at all (asserted in a clean interpreter above), so
+    the ids are literals there and this test is what keeps them honest. A renamed endpoint or
+    source id fails here rather than silently un-registering a source and disabling the check
+    for it."""
+    from src.agent.mcp.serving_client import DRIFT_ENDPOINT, PREDICT_ENDPOINT
+    from src.agent.mcp.tools import (
+        DOCS_SOURCE_ID,
+        INVENTORY_SOURCE_ID,
+        ORDER_SOURCE_ID,
+        trajectory_source_id,
+    )
+
+    assert REGISTERED_SOURCE_IDS == {
+        DRIFT_ENDPOINT,
+        PREDICT_ENDPOINT,
+        INVENTORY_SOURCE_ID,
+        ORDER_SOURCE_ID,
+    }
+    assert DRIFT_SOURCE_ID == DRIFT_ENDPOINT
+    assert PREDICT_SOURCE_ID == PREDICT_ENDPOINT
+    assert INVENTORY_DOMAIN_SOURCE_ID == INVENTORY_SOURCE_ID
+    assert INVENTORY_ORDERS_SOURCE_ID == ORDER_SOURCE_ID
+    # The two deliberate omissions, pinned as omissions rather than left to be inferred from
+    # the absence of a line: the docs-search wrapper has no fixed subject matter, and the
+    # archive's id carries a content hash that moves whenever the archive is rebuilt.
+    assert domain_for(DOCS_SOURCE_ID) is None
+    assert domain_for(trajectory_source_id()) is None
+
+
+def test_a_claim_within_its_cited_tools_domain_is_not_demoted():
+    """#117's own recorded claim, which is exactly the shape that must survive: it cites only
+    live-tool JSON, `"file_count": 197` supports it, and `scored`/`windows` are what
+    `/monitoring/drift` reports on."""
+    one = draft(LIVE_CLAIM)
+    report = verify(one, live_evidence())
+    result = check_claim_domain(LIVE_CLAIM, live_evidence())
+
+    assert report.clean is True
+    assert result.checked is True
+    assert result.matched >= {"scored", "windows"}
+    assert result.off_domain is False
+    assert off_domain_demotions(report, live_evidence()) == {}
+
+
+def test_a_claim_outside_its_cited_tools_domain_is_demoted():
+    """The must-refuse mechanism, isolated: real data, a real id, every deterministic check
+    passed, and nothing in the claim is about what the source reports."""
+    one = draft(OFF_DOMAIN_LIVE_CLAIM)
+    report = verify(one, live_evidence())
+    result = check_claim_domain(OFF_DOMAIN_LIVE_CLAIM, live_evidence())
+
+    assert report.clean is True, "it must fail this check and no other"
+    assert result.checked is True
+    assert result.matched == frozenset()
+    assert off_domain_demotions(report, live_evidence()) == {
+        0: f"{OFF_DOMAIN_REASON} (checked against {LIVE_ID})"
+    }
+
+
+def test_a_demotion_drops_the_claim_and_names_the_source_it_was_checked_against():
+    """Routed through `demotions`, so `grounding.py`'s tier logic is untouched by this issue:
+    the claim is dropped and named exactly like an LLM-demoted one, and its reason says which
+    source the check consulted."""
+    one = draft(OFF_DOMAIN_LIVE_CLAIM, OTHER_GOOD_CLAIM)
+    combined = TurnEvidence(live_evidence().items + evidence().items)
+    report = verify(one, combined)
+
+    response = assemble(
+        one, combined, report=report, demotions=off_domain_demotions(report, combined)
+    )
+
+    assert response.grounding_tier == PARTIAL
+    assert [claim.text for claim in response.claims] == [OTHER_GOOD_CLAIM.text]
+    (dropped,) = response.dropped
+    assert dropped.text == OFF_DOMAIN_LIVE_CLAIM.text
+    assert dropped.reasons == (f"{OFF_DOMAIN_REASON} (checked against {LIVE_ID})",)
+    assert UNSOURCED_PREFIX in response.text
+
+
+def test_a_claim_citing_a_prose_source_alongside_is_not_checked_at_all():
+    """The issue's own boundary: this check does not touch the prose path. The same off-domain
+    text, with a prose chunk cited beside the live source, is *not evaluated* here — trigger
+    (b) and the LLM tier own that case, and evaluating it twice under two different measures is
+    how the prose path's own weak-citation signal would get masked."""
+    mixed = Claim(
+        text=OFF_DOMAIN_LIVE_CLAIM.text, source_ids=[LIVE_ID, CHUNK_ID]
+    )
+    combined = TurnEvidence(evidence().items + live_evidence().items)
+    one = draft(mixed)
+    report = verify(one, combined)
+    result = check_claim_domain(mixed, combined)
+
+    assert result.checked is False, "not checked-and-passed — not evaluated"
+    assert result.off_domain is False
+    assert off_domain_demotions(report, combined) == {}
+
+
+def test_a_claim_citing_an_unregistered_live_source_is_not_checked_either():
+    """Fail-open on anything the closed registry has no opinion about, including when it is
+    cited *alongside* a registered source: having no opinion about one of a claim's sources
+    means having no opinion about the claim."""
+    docs_wrapper = EvidenceItem(
+        "SEARCH prognos_docs", json.dumps({"result_count": 0}), source_type="live_endpoint"
+    )
+    combined = TurnEvidence(live_evidence().items + (docs_wrapper,))
+    unregistered_only = Claim(
+        text=OFF_DOMAIN_LIVE_CLAIM.text, source_ids=["SEARCH prognos_docs"]
+    )
+    alongside = Claim(
+        text=OFF_DOMAIN_LIVE_CLAIM.text, source_ids=[LIVE_ID, "SEARCH prognos_docs"]
+    )
+
+    assert check_claim_domain(unregistered_only, combined).checked is False
+    assert check_claim_domain(alongside, combined).checked is False
+    assert off_domain_demotions(verify(draft(unregistered_only, alongside), combined), combined) == {}
+
+
+def test_a_claim_citing_two_registered_sources_may_be_about_either_one():
+    """The union, not the intersection: a claim citing the monitoring read and the parts table
+    is about one of them or the other, and requiring both domains to match would demote every
+    multi-source claim."""
+    parts_item = EvidenceItem(
+        INVENTORY_DOMAIN_SOURCE_ID,
+        json.dumps({"parts": [{"part_number": "ZA-2115", "quantity_on_hand": 4}]}),
+        source_type="inventory",
+    )
+    both = Claim(
+        text="ZA-2115 is the part number stocked for this housing.",
+        source_ids=[LIVE_ID, INVENTORY_DOMAIN_SOURCE_ID],
+    )
+    combined = TurnEvidence(live_evidence().items + (parts_item,))
+
+    result = check_claim_domain(both, combined)
+
+    assert result.checked is True
+    assert result.source_ids == (LIVE_ID, INVENTORY_DOMAIN_SOURCE_ID)
+    assert result.matched >= {"part", "number", "stocked"}
+
+
+def test_a_claim_already_failing_a_deterministic_check_gets_no_second_reason():
+    """One problem is reported once. The claim below fails numeric fidelity and is off-domain;
+    it is dropped by the check that fired first, and this module adds nothing to it."""
+    fabricated = Claim(
+        text="The oil temperature alarm setpoint is 82 degrees.", source_ids=[LIVE_ID]
+    )
+    one = draft(fabricated)
+    report = verify(one, live_evidence())
+
+    assert report.rejected and NUMERIC_FIDELITY in report.rejected[0].failures
+    assert off_domain_demotions(report, live_evidence()) == {}
+
+
+def test_the_domains_carry_no_word_that_appears_in_every_claim():
+    """A domain containing `bearing` could not discriminate anything in this project — every
+    claim this agent makes is about a bearing. `bearing_type` stays, because it is a real
+    column of the parts table and a claim quoting it is a claim about inventory."""
+    for source_id, domain in CONCEPT_DOMAINS.items():
+        assert "bearing" not in domain, source_id
+        assert "bearings" not in domain, source_id
+        assert domain, source_id
+        assert all(term == term.lower() and term.strip() for term in domain), source_id
+
+
+def test_the_registrys_domains_are_disjoint_from_the_must_refuse_vocabulary():
+    """The check's whole purpose, stated over Section 8's own must-refuse questions rather than
+    over one hand-picked example: none of the words that make those questions unanswerable is
+    in any domain, so a claim built out of them cannot match one."""
+    unanswerable = {
+        "torque", "bolt", "screws", "grease", "lubricant", "relubricated", "nlgi",
+        "inspected", "serviced", "alignment", "dial-indicate", "lockout", "tagout",
+        "de-energize", "osha", "oil", "temperature", "setpoint", "alarm", "iso",
+        "velocity", "mm/s", "damage", "race", "wear",
+    }
+    for source_id, domain in CONCEPT_DOMAINS.items():
+        assert domain.isdisjoint(unanswerable), f"{source_id}: {domain & unanswerable}"
+
+
+def test_the_check_cannot_make_a_call_at_all():
+    """"No LLM call anywhere in this check" as a property of the source, not of a promise: a
+    module with no `async def` and no `await` in it cannot reach `messages.create`, which is
+    the only way this package ever calls a model."""
+    tree = ast.parse((CRITIC_DIR / "relevance.py").read_text(encoding="utf-8"))
+
+    for node in ast.walk(tree):
+        assert not isinstance(node, (ast.AsyncFunctionDef, ast.Await)), ast.dump(node)
+    assert "anthropic" not in (CRITIC_DIR / "relevance.py").read_text(encoding="utf-8")
 
 
 # --- The escalated call, against a recording stub -----------------------------------------

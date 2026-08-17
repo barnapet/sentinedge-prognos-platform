@@ -82,6 +82,13 @@ WEAK_RETRIEVAL_REASON = "retrieval for this question was below the confidence th
 # text lives here so every drop reason is written in one place.
 DEMOTED_REASON = "the cited source was judged not to support it"
 
+# Why a claim was demoted by the deterministic concept-domain check (`relevance.py`, Issue
+# #171). Here rather than in that module for the reason above -- every drop reason a response
+# can carry is written in this one place -- and worded as a statement about *subject matter*,
+# not about support: the check reads what the cited source reports on, never whether the
+# payload contains the claim.
+OFF_DOMAIN_REASON = "the live source it cites does not report on what the claim is about"
+
 
 @dataclass(frozen=True)
 class ReleasedClaim:
