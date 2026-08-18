@@ -394,6 +394,46 @@ One collection, `prognos_docs`, 384-dim, cosine distance. Payload per point:
 filterable — which is what makes Section 4's "adding a manual loader requires no schema change"
 claim true rather than hopeful.
 
+### Addendum (Issue #175): the query path is retrieve-then-rerank, and the lexical term is a null result
+
+Recorded here the way Section 12's addendum records #140 — **no decision above changed**.
+Qdrant, `fastembed`, `bge-small-en-v1.5`, the collection schema and `DEFAULT_LIMIT = 5` are all
+as decided. What changed is inside `search()`: it fetches `INTERNAL_CANDIDATE_LIMIT = 20`
+candidates (with the caller's `source_type` filter applied to *that* query), scores each one
+lexically as well as by vector similarity, and returns the best `DEFAULT_LIMIT` by
+`(1 - LEXICAL_WEIGHT) · vector + LEXICAL_WEIGHT · lexical`, both min-max normalized within the
+pool. `RetrievedChunk.score` still carries the **cosine similarity**, not the combined score:
+`TAU_TOP`/`TAU_SUPPORT` (Issue #163's sweep) and this section's must-refuse mirror metric both
+read that field as a cosine, and publishing a blended number there would reinterpret two
+calibrated thresholds against a scale nobody measured.
+
+Both constants were swept against Section 8's 16 corpus items over the free path — each item's
+own `question` straight to `search()`, no model call — by
+`tests/fixtures/measure_hybrid_rerank.py`. Three results, stated because the next person to
+reach for this lever should not have to re-derive them:
+
+- **20 is sized from the labels, not from convention.** All 23 chunks the golden set declares
+  relevant sit inside the top 20 by vector similarity, the deepest at rank 15. A reranker can
+  only reorder what was retrieved, so this is the ceiling every weight below is measured
+  against.
+- **The lexical term is a null result at best.** recall@5 is 8/8 and mean precision@5 is 0.425
+  — identical to vector-only — for every weight from 0.00 to 0.08, then precision falls (0.400
+  from w=0.09, 0.325 by w=0.60) and recall itself breaks at w=0.65. There is **no** weight at
+  which containment promotes a relevant chunk the vector ranking had missed. `LEXICAL_WEIGHT =
+  0.05` is therefore adopted as *measured-harmless*, not as measured-better.
+- **Where precision@5 is actually lost is visible in the same measurement**, and it is not a
+  ranking-signal problem. 6 relevant chunks fall outside the top 5, and of the 23 top-5 slots
+  no relevant chunk holds, **15 are held by another chunk of the same document** — neighbours
+  that share the query's vocabulary *and* its subject by construction, so a bag-of-words
+  containment score cannot separate them and neither can the embedding. That points at
+  Section 4's chunking granularity and at `k`, which is exactly the "retrieval failure — no
+  prompt change can help" cell of Section 8's 2×2.
+
+The free-path baseline is also **not** the `precision@5 = 0.23` a live tier-2 run reported: the
+free path scores retrieval on the item's own question text, while a real run scores whatever
+query the answerer chose to write. Those are two different measurements of the same index, and
+the gap between them belongs to query formulation, not to ranking.
+
 ## 4. RAG content, the source-agnostic loader, and chunking
 
 **Decision: at launch the corpus is (a) this repository's own real documentation and (b) a
