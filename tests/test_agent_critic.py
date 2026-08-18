@@ -35,6 +35,7 @@ import pytest
 
 from src.agent.answerer import Claim, Draft
 from src.agent.critic import escalation as escalation_module
+from src.agent.critic import grounding as grounding_module
 from src.agent.critic import retrieval_confidence as retrieval_confidence_module
 from src.agent.critic.deterministic import (
     CITATION_COVERAGE,
@@ -521,10 +522,24 @@ def test_a_tier_2_response_never_silently_drops_a_claim():
 
 
 def test_weak_retrieval_alone_degrades_to_partial():
-    response = assemble(draft(GOOD_CLAIM), evidence(scores=(0.30, 0.10)))
+    """Borderline-but-real retrieval: the top chunk fell short of `TAU_TOP`, but both chunks
+    cleared the corroboration floor, so there is a real if partial body of evidence.
+
+    The scores were `(0.30, 0.10)` before Issue #177 and are borderline now, deliberately.
+    Under #177's condition a turn where *nothing* reached `TAU_SUPPORT` is refused outright,
+    so the old literals no longer describe tier 2 — they describe the new tier-3 case, which
+    `test_retrieval_that_reached_nothing_at_all_is_refused_rather_than_released` asserts on
+    its own. This test keeps its original job by moving to the regime it was always about.
+    """
+    response = assemble(
+        draft(GOOD_CLAIM), evidence(scores=(TAU_TOP - 0.02, TAU_SUPPORT + 0.01))
+    )
 
     assert response.grounding_tier == PARTIAL
     assert response.retrieval.below_threshold is True
+    assert response.retrieval.supporting_count == MIN_SUPPORTING_CHUNKS, (
+        "borderline-but-real means the corroboration floor was cleared, only TAU_TOP missed"
+    )
     assert response.dropped == (), "nothing failed a check; retrieval is what was weak"
     assert response.claims, "verified claims are still released at tier 2"
 
@@ -1229,3 +1244,150 @@ def test_the_critic_never_opens_a_session_or_launches_a_server():
         "place_order",
     ):
         assert name not in source, f"the critic names {name!r}"
+
+
+# --- Issue #177: retrieval that returned no evidence at all reaches tier 3 ------------------
+#
+# Section 6's tier table sends every below-threshold turn to `partial`, which makes a
+# must-refuse question releasable: it retrieves five tangential chunks, cites one, states
+# numbers that really are in it, and is published with a recommendation attached. `_tier`
+# now carves out the narrowest sub-case of `below_threshold` — retrieval ran and not one
+# chunk cleared even `TAU_SUPPORT` — and refuses it.
+#
+# The condition is measured, not chosen: `tests/fixtures/measure_no_evidence_floor.py` reads
+# it off the golden set over the free path. What the tests below pin is the *boundary*, on
+# both sides, and the two carve-outs that keep it from reaching an answer it has no business
+# refusing.
+
+
+def test_retrieval_that_reached_nothing_at_all_is_refused_rather_than_released():
+    """The case Issue #177 was filed about, in the shape a must-refuse turn actually takes:
+    nothing failed a deterministic check. The claim is cited, the citation exists, and its
+    number really is in the chunk it cites — the only thing wrong with the turn is that no
+    chunk it retrieved was good enough to corroborate anything."""
+    response = assemble(
+        draft(GOOD_CLAIM, recommendation="Order 1 x ZA-2115."),
+        evidence(scores=(TAU_SUPPORT - 0.01, TAU_SUPPORT - 0.05)),
+    )
+
+    assert response.report.clean is True, (
+        "no deterministic check failed; retrieval is the issue"
+    )
+    assert response.retrieval.supporting_count == 0
+    assert response.grounding_tier == UNGROUNDED
+    assert response.claims == (), "a refused turn releases nothing"
+    assert response.recommendation is None, "and withholds the recommendation with it"
+    assert response.text.startswith(UNGROUNDED_ANSWER)
+
+
+def test_borderline_retrieval_one_step_above_the_boundary_is_still_partial():
+    """The other side of the same boundary, one supporting chunk away. `TAU_SUPPORT` is a
+    floor a *corroborating* chunk has to clear; a turn with one chunk over it has evidence,
+    just not enough of it, and Section 6's tier 2 is exactly what that is for."""
+    response = assemble(
+        draft(GOOD_CLAIM), evidence(scores=(TAU_SUPPORT + 0.01, TAU_SUPPORT - 0.05))
+    )
+
+    assert response.retrieval.supporting_count == 1
+    assert response.retrieval.below_threshold is True
+    assert response.grounding_tier == PARTIAL
+    assert response.claims, "one real chunk is still a partial answer, not a refusal"
+
+
+def test_a_live_tool_only_answer_is_untouched_by_the_new_condition():
+    """The non-regression Issue #177 names as a hard constraint. A question answered from
+    `get_bearing_status` performs no vector search at all, so `performed` is False and there
+    is nothing for a retrieval condition to be weak about. Demoting these was already ruled
+    out in `retrieval_confidence.py`; refusing them would be worse."""
+    response = assemble(draft(LIVE_CLAIM), live_evidence())
+
+    assert response.retrieval.performed is False
+    assert response.retrieval.supporting_count == 0, (
+        "the count really is zero — it is `performed` that keeps the condition off this turn"
+    )
+    assert response.grounding_tier == GROUNDED
+    assert [claim.text for claim in response.claims] == [LIVE_CLAIM.text]
+
+
+def test_a_live_tool_claim_is_not_refused_because_a_co_occurring_search_came_back_empty():
+    """`performed=False`'s carve-out closed through the other door. A turn may call a live
+    tool *and* search; the claim below rests entirely on the live payload, and a documentation
+    search that returned nothing usable says nothing about whether `file_count` is 197."""
+    mixed = TurnEvidence(live_evidence().items + evidence(scores=(0.30, 0.10)).items)
+
+    response = assemble(draft(LIVE_CLAIM), mixed)
+
+    assert response.retrieval.performed is True
+    assert response.retrieval.supporting_count == 0
+    assert response.grounding_tier == PARTIAL, (
+        "weak retrieval still demotes the turn — it must not refuse a live-grounded claim"
+    )
+    assert [claim.text for claim in response.claims] == [LIVE_CLAIM.text]
+
+
+def test_a_claim_citing_a_live_source_alongside_a_weak_chunk_is_not_refused_either():
+    """The mixed-citation reading, stated as a test because it is a choice: a claim carrying
+    both a live id and a chunk id is *partly* live, and the conservative reading of partly is
+    the one that does not refuse."""
+    mixed_claim = Claim(
+        text="Bearing 2nd_test-demo has been scored on 197 windows so far.",
+        source_ids=[LIVE_ID, CHUNK_ID],
+    )
+    mixed = TurnEvidence(live_evidence().items + evidence(scores=(0.30, 0.10)).items)
+
+    response = assemble(draft(mixed_claim), mixed)
+
+    assert response.grounding_tier == PARTIAL
+    assert response.claims
+
+
+def test_the_new_condition_can_only_ever_turn_a_partial_into_a_refusal():
+    """The containment property that makes this additive rather than a re-calibration: it is
+    a strict subset of `below_threshold`, so no `grounded` response can reach it. True by
+    arithmetic — `passed` needs `MIN_SUPPORTING_CHUNKS` chunks over the floor and this fires
+    only at zero — and asserted over a grid rather than argued, because the day someone lowers
+    `MIN_SUPPORTING_CHUNKS` to 1 is the day the argument stops holding silently."""
+    steps = [
+        TAU_SUPPORT - 0.20, TAU_SUPPORT - 0.01, TAU_SUPPORT, TAU_TOP - 0.01, TAU_TOP + 0.05
+    ]
+
+    for first in steps:
+        for second in steps:
+            confidence = assess_retrieval([first, second])
+            if confidence.performed and confidence.supporting_count == 0:
+                assert confidence.passed is False, (
+                    f"({first}, {second}) would be refused while retrieval passed"
+                )
+
+
+def test_the_condition_records_the_measurement_it_was_chosen_from():
+    """Same tripwire `test_the_module_docstring_states_the_thresholds_are_calibrated...`
+    applies to `TAU_TOP`: a boundary in this package is only defensible while the code still
+    says what it was measured against and what it was measured *instead of*. The numbers below
+    are `tests/fixtures/measure_no_evidence_floor.py`'s reading on the committed corpus."""
+    # Line-wrapped prose, so the assertions read a whitespace-normalized copy rather than
+    # depending on where the docstring happens to break.
+    docstring = " ".join((grounding_module._no_evidence_at_all.__doc__ or "").split())
+
+    assert "measure_no_evidence_floor.py" in docstring, "the script that produced the numbers"
+    assert "fires on 5 of Section 8's 8 must-refuse items and on 0 of its 8 answerable ones" \
+        in docstring
+    for overlapping in ("0.7131", "0.7194", "0.7323", "0.7015"):
+        assert overlapping in docstring, (
+            "#163's overlap, which is why top score is not the axis"
+        )
+    assert "would catch 6 of 8 rather than 5, and is rejected" in docstring, (
+        "the rejected alternative, with its own count"
+    )
+    assert "+0.0049" in docstring, "the margin, stated rather than smoothed over"
+
+
+def test_the_module_table_names_the_third_ungrounded_condition():
+    """`grounding.py` opens with Section 6's tier table, and the table is what a reader checks
+    the code against. A third route to `ungrounded` that the table does not mention would make
+    that opening quietly wrong."""
+    docstring = grounding_module.__doc__ or ""
+
+    assert "retrieval ran and returned no evidence at all" in docstring
+    assert "#177" in docstring
+    assert "addition to Section 6's table rather than a reading of" in docstring
