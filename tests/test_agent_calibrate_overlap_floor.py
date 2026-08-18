@@ -80,6 +80,16 @@ _FASTENER_CHUNK = (
 )
 
 
+# `corpus-refuse-housing-bolt-torque`'s real measured top similarity against the committed
+# corpus (`tests/fixtures/measure_no_evidence_floor.py`), rather than a hand-picked "weak
+# enough" number. It was 0.66 until Issue #177, which is below `TAU_SUPPORT` and therefore
+# describes a turn #177's condition refuses outright, on retrieval alone -- so the fixture
+# would no longer isolate the lever these tests are about, and the docstring below claiming
+# "only the critic can tell" would have stopped being true. The real score keeps one chunk
+# over the corroboration floor, which is what this item actually retrieves.
+_REFUSE_TOP_SCORE = 0.7131
+
+
 def _search_payload(chunk_id: str, text: str, *, score: float = 0.80) -> dict:
     """One `search_documentation` payload, in `src/agent/mcp/results.py`'s shape.
 
@@ -165,7 +175,7 @@ def _refuse_turn(verdict: str = "no") -> MeasuredTurn:
     return _measured(
         _REFUSE_ITEM,
         [claim],
-        [_search_payload(_FASTENER_CHUNK_ID, _FASTENER_CHUNK, score=0.66)],
+        [_search_payload(_FASTENER_CHUNK_ID, _FASTENER_CHUNK, score=_REFUSE_TOP_SCORE)],
         {(0, _FASTENER_CHUNK_ID): verdict},
     )
 

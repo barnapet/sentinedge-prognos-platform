@@ -4,7 +4,16 @@
 |---|---|---|
 | `grounded` | All claims cited, all citations verified, retrieval above threshold | Release the full answer with its citations |
 | `partial` | Some claims uncited or retrieval below threshold | Release **only the verified claims**, plus an explicit "I don't have a sourced answer for: ..." naming what was dropped, plus a pointer to a human |
-| `ungrounded` | No claim survives verification, or the citation-existence check failed | One fixed response, plus the titles of the top retrieved documents **as pointers, not as answers**, and a pointer to a human |
+| `ungrounded` | No claim survives verification, the citation-existence check failed, or (Issue #177) retrieval ran and returned no evidence at all | One fixed response, plus the titles of the top retrieved documents **as pointers, not as answers**, and a pointer to a human |
+
+The third `ungrounded` condition is an addition to Section 6's table rather than a reading of
+it, recorded in that section's Issue #177 addendum. Section 6 sends every below-threshold turn
+to `partial`, which means an out-of-corpus question that retrieved five tangential chunks and
+made numerically-faithful statements about one of them is *released*, with a recommendation
+attached. `_no_evidence_at_all` carves out the narrowest sub-case of `below_threshold` --
+retrieval ran and not one chunk cleared even `TAU_SUPPORT` -- and that function's docstring
+carries the measurement it was chosen from and the two conditions that were rejected. It
+introduces no threshold of its own and cannot affect a turn that never searched.
 
 Three properties this module exists to hold, all of them Section 6's:
 
@@ -156,13 +165,102 @@ def _released(
     )
 
 
+def _rests_only_on_retrieval(
+    released: tuple[ReleasedClaim, ...], evidence: TurnEvidence
+) -> bool:
+    """Whether every released claim is held up by retrieved chunks and nothing else.
+
+    The guard on `_no_evidence_at_all` below, and it exists for the same reason
+    `assess_retrieval` refuses to demote a turn that never searched: a turn can call a live
+    tool *and* search, and a claim resting on `get_bearing_status` is no less grounded
+    because a co-occurring documentation search came back empty-handed. Refusing it would be
+    `performed=False`'s carve-out defeated through a different door.
+
+    A claim citing a live source alongside a chunk counts as resting on the live source --
+    partly-live is not all-retrieval, and the conservative reading of a mixed citation is the
+    one that does not refuse.
+
+    A retrieved chunk is identified by carrying a similarity, which is the same thing
+    `TurnEvidence.retrieval_scores` reads to decide `performed` at all; there is no second,
+    divergent notion of "this evidence item came from the index".
+    """
+    retrieved = frozenset(
+        item.source_id for item in evidence.items if item.score is not None
+    )
+    return all(
+        source_id in retrieved for claim in released for source_id in claim.source_ids
+    )
+
+
+def _no_evidence_at_all(
+    retrieval: RetrievalConfidence,
+    released: tuple[ReleasedClaim, ...],
+    evidence: TurnEvidence,
+) -> bool:
+    """Retrieval ran and returned nothing that could serve even as corroboration (Issue #177).
+
+    **This is not `TAU_TOP`'s job run a second time at a lower number, and it adds no number
+    of its own.** `assess_retrieval`'s predicate has two clauses -- a top chunk at or above
+    `TAU_TOP`, and at least `MIN_SUPPORTING_CHUNKS` chunks at or above `TAU_SUPPORT` -- and
+    `below_threshold` is the negation of their conjunction, so it collapses three genuinely
+    different evidential states into one flag:
+
+    - a strong lead with thin corroboration (top over `TAU_TOP`, one supporting chunk),
+    - a borderline body of evidence (several chunks over `TAU_SUPPORT`, top a little short),
+    - and **nothing at all**: not one chunk cleared the floor that a merely *supporting*
+      chunk has to clear, so the best chunk this turn retrieved could not have qualified as
+      a corroborator for some other chunk's claim.
+
+    The first two have a real, partial answer to release, which is what Section 6's tier 2
+    is for. The third does not, and releasing it as `partial` with a recommendation attached
+    is the behaviour Issue #177 was filed about. So the condition reads `supporting_count`,
+    not `top_score`, and compares it against zero -- not against `MIN_SUPPORTING_CHUNKS`,
+    which would be the corroboration clause re-run as a refusal, and not against a new
+    similarity threshold, which would be a number nobody calibrated.
+
+    **Measured, not assumed** (`tests/fixtures/measure_no_evidence_floor.py`, free path, no
+    model call). Against the committed corpus this fires on 5 of Section 8's 8 must-refuse
+    items and on 0 of its 8 answerable ones. The two axes it was chosen between:
+
+    - *top score alone* does not separate the classes at all -- three must-refuse items score
+      above the lowest answerable one (0.7131/0.7194/0.7323 against 0.7015), which is #163's
+      published overlap, unchanged. Those three are outside this condition and stay
+      `partial`; no retrieval-score rule can reach them without refusing a sourceable
+      question, and that is a corpus finding, not a threshold left untuned.
+    - *`supporting_count < MIN_SUPPORTING_CHUNKS`* would catch 6 of 8 rather than 5, and is
+      rejected: its margin is **negative**. It refuses `corpus-refuse-housing-bolt-torque` at
+      0.7131 while sparing an answerable item at 0.7015, so it is not separating the classes
+      -- it spares that item only because the item happens to hold exactly
+      `MIN_SUPPORTING_CHUNKS` chunks, with no headroom at all.
+
+    The chosen condition's own margin is +0.0049 similarity units, thinner than either of the
+    margins #163 accepted for `TAU_TOP` (0.0177 below, 0.0099 above). That is stated plainly
+    rather than smoothed over: what makes it defensible is not the margin but that the
+    boundary is zero and the floor is one this project already calibrated, so there is
+    nothing here to drift or to be quietly re-tuned.
+
+    **It can only ever turn a `partial` into a refusal.** `passed` requires
+    `supporting_count >= MIN_SUPPORTING_CHUNKS`, which is 2, so `supporting_count == 0` with
+    `performed` true implies `below_threshold` -- the turn was already headed for tier 2. No
+    `grounded` response can reach this branch.
+    """
+    if not retrieval.performed:
+        return False
+    if retrieval.supporting_count != 0:
+        return False
+    return _rests_only_on_retrieval(released, evidence)
+
+
 def _tier(
     report: DeterministicReport,
     released: tuple[ReleasedClaim, ...],
     dropped: tuple[DroppedClaim, ...],
     retrieval: RetrievalConfidence,
+    evidence: TurnEvidence,
 ) -> str:
     if report.citation_existence_failed or not released:
+        return UNGROUNDED
+    if _no_evidence_at_all(retrieval, released, evidence):
         return UNGROUNDED
     if dropped or retrieval.below_threshold:
         return PARTIAL
@@ -231,7 +329,7 @@ def assemble(
 
     released = _released(report, demotions)
     dropped = _dropped(report, demotions)
-    tier = _tier(report, released, dropped, retrieval)
+    tier = _tier(report, released, dropped, retrieval, evidence)
     pointers = evidence.document_pointers() if tier == UNGROUNDED else ()
     unanswered = tuple(draft.unanswered)
 

@@ -876,6 +876,60 @@ eliminated**, and no arrangement of the same model checking itself eliminates it
 deterministic layer is load-bearing precisely because it does not share those blind spots; the
 LLM tier is a supplement to it, never a substitute.
 
+### Addendum (Issue #177): a third route to `ungrounded` — retrieval that returned no evidence at all
+
+The tier table above gives `below_threshold` exactly one outcome, `partial`. The first full
+post-remediation live tier-2 run showed what that costs: the must-refuse category scored
+**0/8** while every other signal improved, because a must-refuse turn is not a turn that fails
+a check. It searches, gets five tangential chunks, cites one, states a number that really is in
+that chunk, and is *released* as `partial` with a recommendation attached. The two existing
+routes to `ungrounded` — a fabricated citation, or no claim surviving verification — cannot
+reach it, and nor can any choice of `TAU_TOP`: Issue #163 already published the overlap that
+makes the top score unusable as a separator (three must-refuse items score 0.7131/0.7194/0.7323
+against an answerable item at 0.7015).
+
+**The addition, stated as a rule:** a turn reaches `ungrounded` when retrieval *ran* and **not
+one retrieved chunk reached `TAU_SUPPORT`** — `supporting_count == 0` — and every released
+claim rests on retrieved chunks alone. It introduces no new threshold. `TAU_SUPPORT` is the
+floor a merely *corroborating* chunk has to clear, so this says the best chunk the turn found
+could not have qualified as corroboration for someone else's claim; the count it is compared
+against is zero, which is not a tunable.
+
+**Why it is not `TAU_TOP`'s job run again at a lower number.** `below_threshold` is the
+negation of a conjunction, so it collapses three different evidential states into one flag: a
+strong lead with thin corroboration, a borderline body of evidence with the top a little short,
+and nothing at all. The first two have a real partial answer to release, which is what tier 2
+is for. Only the third does not, and it is the only one this refuses.
+
+**Measured before it was implemented** (`tests/fixtures/measure_no_evidence_floor.py`, free
+path, no model call, re-runnable whenever the corpus moves). On the committed 532-point index
+— re-measured *after* this addendum was written, since Section 4 puts this file in the corpus
+too, and every score below was unchanged to four decimals — the condition fires on **5 of the
+8 must-refuse items and 0 of the 8 answerable ones**, with a margin of +0.0049 similarity
+units between the strongest item it refuses (0.6966) and the weakest it spares (0.7015). Two
+things are recorded rather than smoothed over. That margin is
+**thinner than either of the margins #163 accepted for `TAU_TOP`** (0.0177 below, 0.0099
+above); what makes the condition defensible anyway is that it adds no number of its own. And it
+is **not a fix for the whole gate** — the three must-refuse items that retrieve most strongly
+stay `partial`, and no retrieval-score condition can reach them without refusing a sourceable
+question. That remains a corpus/chunking finding, exactly as Section 8's 7/8 answerable ceiling
+is, and it should not be read as a threshold left untuned.
+
+**The rejected alternative, with its numbers**, because it is the one a reader would reach for:
+`supporting_count < MIN_SUPPORTING_CHUNKS` catches 6 of 8 rather than 5 and also refuses no
+answerable item — but its margin is **negative** (−0.0117). It refuses an item scoring *above*
+the answerable item it spares, sparing that item only because the item happens to hold exactly
+`MIN_SUPPORTING_CHUNKS` chunks, with no headroom at all. It is also the corroboration clause of
+`assess_retrieval` re-run as a refusal, which is the re-calibration this addendum is not.
+
+**Two carve-outs, both load-bearing.** A turn that never searched (`performed=False`, a pure
+live-tool answer) is untouched — that is `retrieval_confidence.py`'s existing reading, and
+refusing those answers would empty the tier of meaning more thoroughly than demoting them
+would. And a turn that searched *and* called a live tool is untouched whenever any released
+claim rests on the live source: a documentation search coming back empty-handed says nothing
+about whether `get_bearing_status` reported what it reported. Without the second, the first is
+defeated through a different door.
+
 ## 7. Inventory: a committed CSV seed, a real SQLite database at runtime
 
 **Decision: commit small, human-diffable CSV seed files; build a real SQLite database from them
